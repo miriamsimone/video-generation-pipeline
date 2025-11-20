@@ -1,0 +1,3 @@
+[submodule "face_rig/osf"]
+	path = face_rig/osf
+	url = https://github.com/emilianavt/OpenSeeFace.git

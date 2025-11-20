@@ -55,7 +55,20 @@
     { "id": "happy_soft_to_happy_big", "start": "happy_soft",  "end": "happy_big" },
 
     { "id": "neutral_to_concerned",    "start": "neutral",     "end": "concerned" },
-    { "id": "neutral_to_blink",        "start": "neutral",     "end": "blink_closed" }
+    { "id": "neutral_to_blink",        "start": "neutral",     "end": "blink_closed" },
+
+    { "id": "speaking_ah_to_speaking_ee", "start": "speaking_ah", "end": "speaking_ee" },
+    { "id": "speaking_ee_to_speaking_ah", "start": "speaking_ee", "end": "speaking_ah" },
+    { "id": "speaking_ah_to_speaking_uw", "start": "speaking_ah", "end": "speaking_uw" },
+    { "id": "speaking_uw_to_speaking_ah", "start": "speaking_uw", "end": "speaking_ah" },
+    { "id": "speaking_ah_to_oh_round",    "start": "speaking_ah", "end": "oh_round" },
+    { "id": "oh_round_to_speaking_ah",    "start": "oh_round",    "end": "speaking_ah" },
+    { "id": "speaking_ee_to_speaking_uw", "start": "speaking_ee", "end": "speaking_uw" },
+    { "id": "speaking_uw_to_speaking_ee", "start": "speaking_uw", "end": "speaking_ee" },
+    { "id": "speaking_ee_to_oh_round",    "start": "speaking_ee", "end": "oh_round" },
+    { "id": "oh_round_to_speaking_ee",    "start": "oh_round",    "end": "speaking_ee" },
+    { "id": "speaking_uw_to_oh_round",    "start": "speaking_uw", "end": "oh_round" },
+    { "id": "oh_round_to_speaking_uw",    "start": "oh_round",    "end": "speaking_uw" }
   ]
 }
 

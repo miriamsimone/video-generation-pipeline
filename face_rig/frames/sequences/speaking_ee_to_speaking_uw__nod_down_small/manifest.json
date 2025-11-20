@@ -1,0 +1,28 @@
+{
+  "path_id": "speaking_ee_to_speaking_uw__nod_down_small",
+  "expr_start": "speaking_ee",
+  "expr_end": "speaking_uw",
+  "pose": "nod_down_small",
+  "frames": [
+    {
+      "t": 0.0,
+      "file": "000.png"
+    },
+    {
+      "t": 0.25,
+      "file": "025.png"
+    },
+    {
+      "t": 0.5,
+      "file": "050.png"
+    },
+    {
+      "t": 0.75,
+      "file": "075.png"
+    },
+    {
+      "t": 1.0,
+      "file": "100.png"
+    }
+  ]
+}

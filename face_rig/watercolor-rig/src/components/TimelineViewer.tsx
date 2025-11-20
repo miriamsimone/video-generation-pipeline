@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { API_BASE, fetchTimeline, regenerateFrame } from "../api";
-import type { FrameInfo, Timeline } from "../api";
+import { API_BASE, fetchTimeline, regenerateFrame } from "../api.ts";
+import type { FrameInfo, Timeline } from "../api.ts";
 
 type Props = {
   pathId: string | null;

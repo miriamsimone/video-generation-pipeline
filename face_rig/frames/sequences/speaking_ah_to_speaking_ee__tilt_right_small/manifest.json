@@ -1,0 +1,28 @@
+{
+  "path_id": "speaking_ah_to_speaking_ee__tilt_right_small",
+  "expr_start": "speaking_ah",
+  "expr_end": "speaking_ee",
+  "pose": "tilt_right_small",
+  "frames": [
+    {
+      "t": 0.0,
+      "file": "000.png"
+    },
+    {
+      "t": 0.25,
+      "file": "025.png"
+    },
+    {
+      "t": 0.5,
+      "file": "050.png"
+    },
+    {
+      "t": 0.75,
+      "file": "075.png"
+    },
+    {
+      "t": 1.0,
+      "file": "100.png"
+    }
+  ]
+}
