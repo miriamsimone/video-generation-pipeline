@@ -58,6 +58,8 @@ export const TimelineDirector: React.FC = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportFormat, setExportFormat] = useState<"mp4" | "webm">("mp4");
   const [exportFps, setExportFps] = useState(24);
+  const [isGeneratingTTS, setIsGeneratingTTS] = useState(false);
+  const [elevenLabsVoiceId, setElevenLabsVoiceId] = useState("21m00Tcm4TlvDq8ikWAM"); // Rachel voice
   
   // Animation state
   const [currentState, setCurrentState] = useState<State>({ expr: "neutral", pose: "center" });
@@ -157,29 +159,63 @@ export const TimelineDirector: React.FC = () => {
   
   // Parse TextGrid file
   const parseTextGrid = (content: string): PhonemeKeyframe[] => {
-    // Find phones tier
+    // Parse both words and phones tiers
+    const wordsTierMatch = content.match(/name = "words"[\s\S]*?intervals: size = (\d+)([\s\S]*?)(?=item \[|$)/);
     const phonesTierMatch = content.match(/name = "phones"[\s\S]*?intervals: size = (\d+)([\s\S]*?)(?=item \[|$)/);
+    
     if (!phonesTierMatch) {
       throw new Error("Could not find 'phones' tier in TextGrid");
     }
     
-    const tierContent = phonesTierMatch[2];
     const intervalRegex = /intervals \[\d+\]:\s*xmin = ([\d.]+)\s*xmax = ([\d.]+)\s*text = "([^"]*)"/g;
     
+    // Parse words
+    const words: Array<{ start: number; end: number; text: string }> = [];
+    if (wordsTierMatch) {
+      const tierContent = wordsTierMatch[2];
+      let match;
+      while ((match = intervalRegex.exec(tierContent)) !== null) {
+        const text = match[3].trim();
+        if (text) {
+          words.push({
+            start: parseFloat(match[1]) * 1000,
+            end: parseFloat(match[2]) * 1000,
+            text
+          });
+        }
+      }
+    }
+    
+    // Parse phonemes
     const phonemes: Array<{ start: number; end: number; text: string }> = [];
+    const tierContent = phonesTierMatch[2];
     let match;
     while ((match = intervalRegex.exec(tierContent)) !== null) {
       const text = match[3].trim();
       if (text) {
         phonemes.push({
-          start: parseFloat(match[1]) * 1000, // Convert to ms
+          start: parseFloat(match[1]) * 1000,
           end: parseFloat(match[2]) * 1000,
           text
         });
       }
     }
     
-    // Map phonemes to expressions with conjoining
+    // Determine what expression to return to after speech
+    // Look at expression timeline to find what's active before first word
+    let returnToExpr: ExpressionId = "neutral";
+    if (words.length > 0 && expressionTimeline.length > 0) {
+      const firstWordTime = words[0].start;
+      // Find the most recent expression keyframe before the first word
+      for (let i = expressionTimeline.length - 1; i >= 0; i--) {
+        if (expressionTimeline[i].time_ms < firstWordTime) {
+          returnToExpr = expressionTimeline[i].target_expr;
+          break;
+        }
+      }
+    }
+    
+    // Map phonemes to expressions
     const PHONEME_TO_EXPR: Record<string, ExpressionId> = {
       // AH sounds
       "AH0": "speaking_ah", "AH1": "speaking_ah", "AH2": "speaking_ah",
@@ -202,88 +238,58 @@ export const TimelineDirector: React.FC = () => {
       "ER0": "speaking_ah", "ER1": "speaking_ah", "ER2": "speaking_ah",
     };
     
+    // Use word-based approach: first vowel phoneme of each word
     const keyframes: PhonemeKeyframe[] = [];
-    let lastExpr: ExpressionId = "neutral";
-    let lastKeyframeArrivalMs = -175; // Allow first keyframe immediately
-    let i = 0;
-    const TRANSITION_MS = 500; // Long smooth transitions for lip-sync
-    const COOLDOWN_MS = 175; // Minimum time between transitions (175ms)
+    let lastExpr: ExpressionId = returnToExpr;
+    const TRANSITION_MS = 500;
     
-    while (i < phonemes.length) {
-      const phoneme = phonemes[i];
-      const expr = PHONEME_TO_EXPR[phoneme.text] || "neutral";
+    for (const word of words) {
+      // Find all phonemes in this word
+      const wordPhonemes = phonemes.filter(
+        p => p.start >= word.start && p.start < word.end
+      );
       
-      // If consonant, look ahead for vowel
-      if (expr === "neutral" && i + 1 < phonemes.length) {
-        const nextPhoneme = phonemes[i + 1];
-        const nextExpr = PHONEME_TO_EXPR[nextPhoneme.text];
-        
-        if (nextExpr && nextExpr !== "neutral") {
-          // Conjoin consonant with vowel
-          if (nextExpr !== lastExpr) {
-            // Check cooldown: has enough time passed since last keyframe?
-            const timeSinceLastArrival = phoneme.start - lastKeyframeArrivalMs;
-            if (timeSinceLastArrival < COOLDOWN_MS) {
-              // Skip this transition - too soon after last one
-              i += 2;
-              continue;
-            }
-            
-            // Use fixed transition duration
-            const adaptiveDuration = TRANSITION_MS;
-            
-            // Start transition AT phoneme start for audio sync
-            keyframes.push({
-              id: `ph${keyframes.length}`,
-              time_ms: Math.round(phoneme.start),
-              target_expr: nextExpr,
-              transition_duration_ms: adaptiveDuration,
-              phoneme: `${phoneme.text}→${nextPhoneme.text}`
-            });
-            lastExpr = nextExpr;
-            lastKeyframeArrivalMs = phoneme.start; // Update cooldown timer
-          }
-          i += 2; // Skip vowel
-          continue;
+      if (wordPhonemes.length === 0) continue;
+      
+      // Find first vowel phoneme
+      let targetExpr: ExpressionId | null = null;
+      let firstPhoneme: string | null = null;
+      
+      for (const ph of wordPhonemes) {
+        const expr = PHONEME_TO_EXPR[ph.text];
+        if (expr && expr !== "neutral") {
+          targetExpr = expr;
+          firstPhoneme = ph.text;
+          break;
         }
       }
       
-      // Vowel or standalone consonant
-      if (expr !== lastExpr) {
-        // Check cooldown: has enough time passed since last keyframe?
-        const timeSinceLastArrival = phoneme.start - lastKeyframeArrivalMs;
-        if (timeSinceLastArrival < COOLDOWN_MS) {
-          // Skip this transition - too soon after last one
-          i++;
-          continue;
-        }
-        
-        // Use fixed transition duration
-        const adaptiveDuration = TRANSITION_MS;
-        
-        // Start transition AT phoneme start for audio sync
+      // If no vowel, use first phoneme
+      if (!targetExpr && wordPhonemes.length > 0) {
+        firstPhoneme = wordPhonemes[0].text;
+        targetExpr = PHONEME_TO_EXPR[firstPhoneme] || "neutral";
+      }
+      
+      // Add keyframe if expression changed
+      if (targetExpr && targetExpr !== lastExpr) {
         keyframes.push({
           id: `ph${keyframes.length}`,
-          time_ms: Math.round(phoneme.start),
-          target_expr: expr,
-          transition_duration_ms: adaptiveDuration,
-          phoneme: phoneme.text
+          time_ms: Math.round(word.start),
+          target_expr: targetExpr,
+          transition_duration_ms: TRANSITION_MS,
+          phoneme: `${word.text} (${firstPhoneme})`
         });
-        lastExpr = expr;
-        lastKeyframeArrivalMs = phoneme.start; // Update cooldown timer
+        lastExpr = targetExpr;
       }
-      
-      i++;
     }
     
-    // Add final keyframe to return to neutral (if not already neutral)
-    if (phonemes.length > 0 && lastExpr !== "neutral") {
-      const finalTimeMs = phonemes[phonemes.length - 1].end;
-      // Start transition at end of speech
+    // Add final keyframe to return to the base expression (whatever was active before speech)
+    if (words.length > 0 && lastExpr !== returnToExpr) {
+      const finalTimeMs = words[words.length - 1].end;
       keyframes.push({
         id: `ph${keyframes.length}`,
         time_ms: Math.round(finalTimeMs),
-        target_expr: "neutral",
+        target_expr: returnToExpr,
         transition_duration_ms: 300,
         phoneme: ""
       });
@@ -425,6 +431,58 @@ export const TimelineDirector: React.FC = () => {
   };
   
   // Generate emotion keyframes using OpenAI (via backend)
+  const generateTTS = async () => {
+    if (!transcript) {
+      alert("Please upload a transcript first");
+      return;
+    }
+    
+    setIsGeneratingTTS(true);
+    
+    try {
+      console.log("🎙️ Generating audio with ElevenLabs TTS...");
+      
+      const response = await fetch(`${API_BASE}/generate-tts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          transcript: transcript,
+          voice_id: elevenLabsVoiceId
+        })
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`TTS generation failed: ${response.status} ${errorText}`);
+      }
+      
+      const ttsData = await response.json();
+      
+      console.log(`✅ Generated audio: ${ttsData.filename} (${ttsData.duration.toFixed(1)}s)`);
+      
+      // Create a File object from the generated audio
+      const audioResponse = await fetch(`${API_BASE}/audio/${ttsData.filename}`);
+      const audioBlob = await audioResponse.blob();
+      const audioFileFromTTS = new File([audioBlob], ttsData.filename, { type: "audio/wav" });
+      
+      // Set it as the current audio file
+      setAudioFile(audioFileFromTTS);
+      const url = URL.createObjectURL(audioBlob);
+      setAudioUrl(url);
+      setAudioDuration(ttsData.duration * 1000);
+      
+      alert(`✅ Audio generated successfully! Duration: ${ttsData.duration.toFixed(1)}s\nYou can now generate the phoneme timeline.`);
+      
+    } catch (error: any) {
+      console.error("TTS generation error:", error);
+      alert(`❌ TTS generation failed: ${error?.message || error}`);
+    } finally {
+      setIsGeneratingTTS(false);
+    }
+  };
+  
   const generateEmotions = async () => {
     if (!transcript || phonemeTimeline.length === 0) {
       alert("Please upload both a transcript and load a TextGrid/phoneme timeline first");
@@ -783,8 +841,19 @@ export const TimelineDirector: React.FC = () => {
       if (newTime < audioDuration) {
         animationFrameRef.current = requestAnimationFrame(tick);
       } else {
+        // Playback finished
         setIsPlaying(false);
         setCurrentTime(0);
+        setCurrentState({ expr: "neutral", pose: "center" });
+        setIsAnimating(false);
+        // Clear animation state
+        setActiveSegments([]);
+        setSegmentIndex(0);
+        setFrameIndex(0);
+        if (animationIntervalRef.current) {
+          clearInterval(animationIntervalRef.current);
+          animationIntervalRef.current = null;
+        }
       }
     };
     
@@ -809,8 +878,18 @@ export const TimelineDirector: React.FC = () => {
         });
       }
     }
+    
+    // If starting from beginning, ensure we're in neutral state
+    if (currentTime === 0) {
+      setCurrentState({ expr: "neutral", pose: "center" });
+      setIsAnimating(false);
+      setActiveSegments([]);
+      setSegmentIndex(0);
+      setFrameIndex(0);
+    }
+    
     setIsPlaying(true);
-    lastUpdateTime.current = currentTime;
+    lastUpdateTime.current = currentTime - 100; // Set to before current time to trigger immediate check
   };
   
   const handlePause = () => {
@@ -828,6 +907,60 @@ export const TimelineDirector: React.FC = () => {
     setCurrentTime(0);
     setIsPlaying(false);
     setCurrentState({ expr: "neutral", pose: "center" });
+    setIsAnimating(false);
+    // Clear animation state
+    setActiveSegments([]);
+    setSegmentIndex(0);
+    setFrameIndex(0);
+    if (animationIntervalRef.current) {
+      clearInterval(animationIntervalRef.current);
+      animationIntervalRef.current = null;
+    }
+  };
+  
+  const handleClear = () => {
+    // Stop playback
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+    
+    // Revoke audio URL
+    if (audioUrl) {
+      URL.revokeObjectURL(audioUrl);
+    }
+    
+    // Reset all state
+    setAudioFile(null);
+    setAudioUrl(null);
+    setAudioDuration(5000);
+    setPoseTimeline([{ id: "p0", time_ms: 0, target_pose: "center", transition_duration_ms: 0 }]);
+    setExpressionTimeline([{ id: "e0", time_ms: 0, target_expr: "neutral", transition_duration_ms: 0 }]);
+    setPhonemeTimeline([]);
+    setCurrentTime(0);
+    setIsPlaying(false);
+    setCurrentState({ expr: "neutral", pose: "center" });
+    setIsAnimating(false);
+    setSelectedKeyframe(null);
+    setTranscript("");
+    setActiveSegments([]);
+    setSegmentIndex(0);
+    setFrameIndex(0);
+    setBufferA("");
+    setBufferB("");
+    setCurrentImage(null);
+    
+    if (animationIntervalRef.current) {
+      clearInterval(animationIntervalRef.current);
+      animationIntervalRef.current = null;
+    }
+    
+    // Clear file input
+    if (transcriptFileInputRef.current) {
+      transcriptFileInputRef.current.value = "";
+    }
+    
+    console.log("🧹 Timeline cleared");
   };
   
   // Export video
@@ -852,7 +985,9 @@ export const TimelineDirector: React.FC = () => {
         });
         
         if (!uploadRes.ok) {
-          throw new Error("Failed to upload audio");
+          const errorText = await uploadRes.text();
+          console.error("Upload error:", errorText);
+          throw new Error(`Failed to upload audio: ${uploadRes.status} ${errorText}`);
         }
         
         const uploadData = await uploadRes.json();
@@ -890,9 +1025,9 @@ export const TimelineDirector: React.FC = () => {
       document.body.removeChild(a);
       
       alert("✅ Video exported successfully!");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Export error:", error);
-      alert(`❌ Export failed: ${error.message}`);
+      alert(`❌ Export failed: ${error?.message || error}`);
     } finally {
       setIsExporting(false);
     }
@@ -960,6 +1095,52 @@ export const TimelineDirector: React.FC = () => {
                 {transcript}
               </div>
             )}
+            <div style={{ marginBottom: "10px", padding: "10px", background: "#E1F5FE", borderRadius: "4px" }}>
+              <div style={{ fontSize: "12px", fontWeight: "bold", marginBottom: "5px", color: "#0277BD" }}>
+                🎙️ Optional: Generate Audio with ElevenLabs
+              </div>
+              <div style={{ display: "flex", gap: "8px", marginBottom: "8px", alignItems: "center" }}>
+                <label style={{ fontSize: "11px", color: "#555", minWidth: "45px" }}>Voice:</label>
+                <select 
+                  value={elevenLabsVoiceId}
+                  onChange={(e) => setElevenLabsVoiceId(e.target.value)}
+                  style={{
+                    flex: 1,
+                    padding: "4px 8px",
+                    fontSize: "11px",
+                    borderRadius: "3px",
+                    border: "1px solid #0277BD"
+                  }}
+                >
+                  <option value="21m00Tcm4TlvDq8ikWAM">Rachel (Female, Calm)</option>
+                  <option value="EXAVITQu4vr4xnSDxMaL">Bella (Female, Soft)</option>
+                  <option value="AZnzlk1XvdvUeBnXmlld">Domi (Female, Strong)</option>
+                  <option value="ErXwobaYiN019PkySvjV">Antoni (Male, Well-rounded)</option>
+                  <option value="VR6AewLTigWG4xSOukaG">Arnold (Male, Crisp)</option>
+                  <option value="pNInz6obpgDQGcFmaJgB">Adam (Male, Deep)</option>
+                  <option value="yoZ06aMxZJJ28mfd3POQ">Sam (Male, Raspy)</option>
+                </select>
+              </div>
+              <button 
+                onClick={generateTTS}
+                disabled={!transcript || isGeneratingTTS}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: "12px",
+                  background: isGeneratingTTS ? "#ccc" : "#0277BD",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "4px",
+                  cursor: isGeneratingTTS ? "not-allowed" : "pointer",
+                  width: "100%"
+                }}
+              >
+                {isGeneratingTTS ? "🎙️ Generating..." : "🎙️ Generate Audio from Text"}
+              </button>
+              <div style={{ fontSize: "10px", color: "#666", marginTop: "4px" }}>
+                💡 This will generate audio from your transcript. Requires ELEVENLABS_API_KEY env var.
+              </div>
+            </div>
             <button 
               onClick={generateAlignment}
               disabled={!audioFile || !transcript || isGeneratingAlignment}
@@ -1342,6 +1523,17 @@ export const TimelineDirector: React.FC = () => {
             }}>
               ⏹️ Stop
             </button>
+            <button onClick={handleClear} style={{
+              padding: "10px 20px",
+              fontSize: "16px",
+              background: "#9E9E9E",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}>
+              🧹 Clear
+            </button>
             {selectedKeyframe && (
               <button onClick={() => deleteKeyframe(selectedKeyframe)} style={{
                 padding: "10px 20px",
@@ -1425,7 +1617,12 @@ export const TimelineDirector: React.FC = () => {
         </div>
         
         {/* Right: Preview */}
-        <div style={{ width: "400px" }}>
+        <div style={{ 
+          width: "400px",
+          position: "sticky",
+          top: "20px",
+          alignSelf: "flex-start"
+        }}>
           <h3>Preview</h3>
           <div style={{ 
             width: "100%", 

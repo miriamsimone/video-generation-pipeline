@@ -77,15 +77,32 @@ CONSONANTS = {
 }
 
 
-def parse_textgrid(filepath: Path) -> List[Tuple[float, float, str]]:
+def parse_textgrid(filepath: Path) -> Tuple[List[Tuple[float, float, str]], List[Tuple[float, float, str]]]:
     """
-    Parse a TextGrid file and extract phoneme intervals.
+    Parse a TextGrid file and extract word and phoneme intervals.
     
     Returns:
-        List of (start_time, end_time, phoneme) tuples in seconds
+        Tuple of (words, phonemes) where each is a list of (start_time, end_time, text) tuples in seconds
     """
     with open(filepath, 'r', encoding='utf-8') as f:
         content = f.read()
+    
+    # Find the words tier
+    words_tier_match = re.search(
+        r'name = "words".*?intervals: size = (\d+)(.*?)(?=item \[|$)',
+        content,
+        re.DOTALL
+    )
+    
+    words = []
+    if words_tier_match:
+        tier_content = words_tier_match.group(2)
+        interval_pattern = r'intervals \[\d+\]:\s*xmin = ([\d.]+)\s*xmax = ([\d.]+)\s*text = "([^"]*)"'
+        intervals = re.findall(interval_pattern, tier_content)
+        
+        for xmin, xmax, text in intervals:
+            if text.strip():  # Skip empty intervals
+                words.append((float(xmin), float(xmax), text.strip()))
     
     # Find the phones tier
     phones_tier_match = re.search(
@@ -108,7 +125,7 @@ def parse_textgrid(filepath: Path) -> List[Tuple[float, float, str]]:
         if text.strip():  # Skip empty intervals
             phonemes.append((float(xmin), float(xmax), text.strip()))
     
-    return phonemes
+    return words, phonemes
 
 
 def phoneme_to_expression(phoneme: str) -> str:
@@ -132,12 +149,97 @@ def is_vowel(phoneme: str) -> bool:
     return expr != "neutral"
 
 
+def create_timeline_from_words(
+    words: List[Tuple[float, float, str]],
+    phonemes: List[Tuple[float, float, str]],
+    transition_duration_ms: int = 500,
+    cooldown_ms: int = 0,
+    return_to_expr: str = "neutral"
+) -> Dict:
+    """
+    Create a keyframe timeline using first phoneme of each word.
+    
+    This is less frantic than animating every phoneme - we just find the
+    first vowel phoneme in each word and hold it for the word duration.
+    
+    Args:
+        words: List of (start_time, end_time, word_text) tuples
+        phonemes: List of (start_time, end_time, phoneme) tuples
+        transition_duration_ms: Transition time (default 500ms)
+        return_to_expr: Expression to return to after speech (default "neutral")
+    
+    Returns:
+        Timeline dictionary with keyframes
+    """
+    keyframes = []
+    last_expr = return_to_expr
+    
+    for word_start, word_end, word_text in words:
+        # Find all phonemes within this word's time range
+        word_phonemes = [
+            (start, end, ph) for start, end, ph in phonemes
+            if start >= word_start and start < word_end
+        ]
+        
+        if not word_phonemes:
+            continue
+        
+        # Find the first vowel phoneme in the word (skip consonants at the beginning)
+        target_expr = None
+        first_phoneme = None
+        
+        for start, end, ph in word_phonemes:
+            expr = phoneme_to_expression(ph)
+            if expr != "neutral":  # Found a vowel
+                target_expr = expr
+                first_phoneme = ph
+                break
+        
+        # If no vowel found, use the first phoneme (even if consonant)
+        if target_expr is None and word_phonemes:
+            start, end, first_phoneme = word_phonemes[0]
+            target_expr = phoneme_to_expression(first_phoneme)
+        
+        # Only add keyframe if expression changed
+        if target_expr and target_expr != last_expr:
+            word_start_ms = int(word_start * 1000)
+            
+            keyframes.append({
+                "time_ms": word_start_ms,
+                "target_expr": target_expr,
+                "target_pose": "center",
+                "transition_duration_ms": transition_duration_ms,
+                "phoneme": f"{word_text} ({first_phoneme})",
+            })
+            
+            last_expr = target_expr
+    
+    # Add final keyframe to return to the base expression (whatever was active before speech)
+    if words and last_expr != return_to_expr:
+        final_time_ms = int(words[-1][1] * 1000)
+        keyframes.append({
+            "time_ms": final_time_ms,
+            "target_expr": return_to_expr,
+            "target_pose": "center",
+            "transition_duration_ms": 300,
+            "phoneme": "",
+        })
+    
+    timeline = {
+        "id": f"word_animation_{int(words[0][0]*1000) if words else 0}",
+        "keyframes": keyframes,
+        "total_duration_ms": int(words[-1][1] * 1000) if words else 0,
+    }
+    
+    return timeline
+
+
 def create_timeline(
     phonemes: List[Tuple[float, float, str]],
     transition_duration_ms: int = 500,  # Long smooth transitions for lip-sync
     min_transition_ms: int = None,      # Ignored
     max_transition_ms: int = None,      # Ignored
-    cooldown_ms: int = 175              # Minimum time between transitions (default: 175ms)
+    cooldown_ms: int = 0                # Minimum time between transitions (default: 0ms)
 ) -> Dict:
     """
     Create a keyframe timeline from phoneme alignments.
@@ -236,17 +338,8 @@ def create_timeline(
         
         i += 1
     
-    # Add final keyframe to return to neutral (if not already neutral)
-    if phonemes and last_expr != "neutral":
-        final_time_ms = int(phonemes[-1][1] * 1000)
-        # Start transition at end of speech
-        keyframes.append({
-            "time_ms": final_time_ms,
-            "target_expr": "neutral",
-            "target_pose": "center",
-            "transition_duration_ms": 300,
-            "phoneme": "",
-        })
+    # Don't add automatic neutral transition at end
+    # Let the expression timeline control the ending
     
     timeline = {
         "id": f"phoneme_animation_{int(phonemes[0][0]*1000) if phonemes else 0}",
@@ -265,8 +358,10 @@ def main():
     )
     parser.add_argument("textgrid", type=Path, help="Input TextGrid file")
     parser.add_argument("output", type=Path, nargs='?', help="Output JSON file (default: input.timeline.json)")
-    parser.add_argument("--transition", type=int, default=500, help="Transition duration in ms - starts AT phoneme (default: 500)")
-    parser.add_argument("--cooldown", type=int, default=175, help="Minimum time between transitions in ms (default: 175)")
+    parser.add_argument("--transition", type=int, default=500, help="Transition duration in ms (default: 500)")
+    parser.add_argument("--mode", choices=["words", "phonemes"], default="words", 
+                        help="Animation mode: 'words' (first vowel per word, less frantic) or 'phonemes' (every phoneme with cooldown)")
+    parser.add_argument("--cooldown", type=int, default=0, help="Minimum time between transitions in ms (phonemes mode only, default: 0)")
     parser.add_argument("--min-transition", type=int, default=80, help="(Ignored, kept for compatibility)")
     parser.add_argument("--max-transition", type=int, default=200, help="(Ignored, kept for compatibility)")
     
@@ -276,19 +371,30 @@ def main():
     output_path = args.output if args.output else input_path.with_suffix('.timeline.json')
     
     print(f"📖 Reading TextGrid: {input_path}")
-    phonemes = parse_textgrid(input_path)
-    print(f"✅ Found {len(phonemes)} phonemes")
+    words, phonemes = parse_textgrid(input_path)
+    print(f"✅ Found {len(words)} words, {len(phonemes)} phonemes")
     
     print(f"\n🎬 Creating animation timeline...")
-    print(f"   Transition: {args.transition}ms (starts AT phoneme, synced with audio)")
-    print(f"   Cooldown: {args.cooldown}ms (minimum time between transitions)")
-    timeline = create_timeline(
-        phonemes,
-        transition_duration_ms=args.transition,
-        min_transition_ms=args.min_transition,
-        max_transition_ms=args.max_transition,
-        cooldown_ms=args.cooldown
-    )
+    print(f"   Mode: {args.mode}")
+    print(f"   Transition: {args.transition}ms")
+    
+    if args.mode == "words":
+        print(f"   Strategy: First vowel phoneme of each word (less frantic)")
+        timeline = create_timeline_from_words(
+            words,
+            phonemes,
+            transition_duration_ms=args.transition
+        )
+    else:
+        print(f"   Strategy: Every phoneme with {args.cooldown}ms cooldown")
+        timeline = create_timeline(
+            phonemes,
+            transition_duration_ms=args.transition,
+            min_transition_ms=args.min_transition,
+            max_transition_ms=args.max_transition,
+            cooldown_ms=args.cooldown
+        )
+    
     print(f"✅ Created {len(timeline['keyframes'])} keyframes")
     
     print(f"\n💾 Writing timeline: {output_path}")

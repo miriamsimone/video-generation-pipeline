@@ -3,6 +3,7 @@ import os
 import sys
 import json
 import subprocess
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Dict, List
@@ -111,6 +112,10 @@ class ExportRequest(BaseModel):
     audio_url: str
     format: str  # "mp4" or "webm"
     fps: int = 24
+
+class TTSRequest(BaseModel):
+    transcript: str
+    voice_id: str = "21m00Tcm4TlvDq8ikWAM"  # Default ElevenLabs voice (Rachel)
 
 app = FastAPI()
 
@@ -741,7 +746,7 @@ async def generate_alignment(
         # Parse TextGrid and generate timeline using existing script
         timeline_script = Path(__file__).parent / "textgrid_to_timeline.py"
         timeline_result = subprocess.run(
-            [sys.executable, str(timeline_script), str(textgrid_path)],
+            [sys.executable, str(timeline_script), str(textgrid_path), "--mode", "words"],
             capture_output=True,
             text=True,
             timeout=10
@@ -779,6 +784,16 @@ async def generate_alignment(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+@app.get("/audio/{filename}")
+async def get_audio(filename: str):
+    """Serve an audio file"""
+    file_path = AUDIO_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "Audio file not found")
+    
+    return FileResponse(file_path, media_type="audio/wav")
+
+
 @app.post("/audio/upload")
 async def upload_audio(file: UploadFile = File(...)):
     """
@@ -807,6 +822,104 @@ async def upload_audio(file: UploadFile = File(...)):
         import traceback
         traceback.print_exc()
         raise HTTPException(500, f"Failed to upload audio: {str(e)}")
+
+
+@app.post("/generate-tts")
+async def generate_tts(request: TTSRequest):
+    """
+    Generate audio from text using ElevenLabs TTS.
+    Returns the audio file information.
+    """
+    import requests
+    
+    api_key = os.environ.get("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise HTTPException(500, "ELEVENLABS_API_KEY not set in environment")
+    
+    try:
+        # Call ElevenLabs API
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{request.voice_id}"
+        
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": api_key
+        }
+        
+        data = {
+            "text": request.transcript,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75
+            }
+        }
+        
+        print(f"[TTS] Generating audio for {len(request.transcript)} chars with voice {request.voice_id}")
+        
+        response = requests.post(url, json=data, headers=headers)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            print(f"[TTS] ElevenLabs error: {error_text}")
+            raise HTTPException(500, f"ElevenLabs API error: {response.status_code} - {error_text}")
+        
+        # Save audio file
+        timestamp = int(time.time() * 1000)
+        filename = f"tts_{timestamp}.mp3"
+        file_path = AUDIO_DIR / filename
+        
+        with open(file_path, "wb") as f:
+            f.write(response.content)
+        
+        # Convert MP3 to WAV for MFA compatibility
+        wav_filename = f"tts_{timestamp}.wav"
+        wav_path = AUDIO_DIR / wav_filename
+        
+        # Use ffmpeg to convert
+        convert_cmd = [
+            "ffmpeg",
+            "-i", str(file_path),
+            "-ar", "16000",  # 16kHz sample rate for MFA
+            "-ac", "1",      # Mono
+            "-y", str(wav_path)
+        ]
+        
+        convert_result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=30)
+        
+        if convert_result.returncode != 0:
+            print(f"[TTS] FFmpeg conversion error: {convert_result.stderr}")
+            raise HTTPException(500, f"Audio conversion failed: {convert_result.stderr}")
+        
+        print(f"[TTS] Generated and converted: {wav_filename} ({wav_path.stat().st_size} bytes)")
+        
+        # Get audio duration
+        try:
+            import wave
+            with wave.open(str(wav_path), 'rb') as wav_file:
+                frames = wav_file.getnframes()
+                rate = wav_file.getframerate()
+                duration = frames / float(rate)
+        except:
+            duration = 0
+        
+        return {
+            "filename": wav_filename,
+            "path": str(wav_path),
+            "duration": duration,
+            "original_mp3": filename
+        }
+        
+    except requests.exceptions.RequestException as e:
+        print(f"[TTS] Request error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to call ElevenLabs API: {str(e)}")
+    except Exception as e:
+        print(f"[TTS] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Failed to generate TTS: {str(e)}")
 
 
 @app.post("/export-video")
@@ -858,42 +971,90 @@ async def export_video(request: ExportRequest):
         transition_segments = []
         segment_index = 0
         frame_index = 0
+        last_triggered_kf_idx = -1
         
         for frame_num in range(total_frames):
             current_time_ms = frame_num * frame_duration_ms
             
             # Check if we need to start a new transition
-            for kf in request.combined_timeline:
-                if kf["time_ms"] <= current_time_ms < kf["time_ms"] + 10:  # Small window for triggering
+            for kf_idx, kf in enumerate(request.combined_timeline):
+                if kf_idx <= last_triggered_kf_idx:
+                    continue  # Already triggered this keyframe
+                    
+                if kf["time_ms"] <= current_time_ms < kf["time_ms"] + frame_duration_ms * 2:  # Wider window for triggering
                     # Start new transition
                     target_expr = kf.get("target_expr", current_state["expr"])
                     target_pose = kf.get("target_pose", current_state["pose"])
                     
                     if target_expr != current_state["expr"] or target_pose != current_state["pose"]:
-                        # Plan route
-                        from_state = f"{current_state['expr']}__{current_state['pose']}"
-                        to_state = f"{target_expr}__{target_pose}"
+                        # Plan route with proper fallback through neutral
+                        from_expr = current_state['expr']
+                        from_pose = current_state['pose']
                         
-                        # Use transition graph logic (simplified for backend)
-                        transition_path = f"{current_state['expr']}_to_{target_expr}__{current_state['pose']}"
-                        timeline_dir = TIMELINES_DIR / transition_path
+                        segments = []
                         
-                        if timeline_dir.exists():
-                            json_file = timeline_dir / "timeline.json"
-                            if json_file.exists():
-                                with open(json_file, "r") as f:
-                                    timeline_data = json.load(f)
-                                    transition_segments = [{"pathId": transition_path, "timeline": timeline_data}]
-                                    segment_index = 0
-                                    frame_index = 0
-                                    active_transition = {
-                                        "start_ms": current_time_ms,
-                                        "duration_ms": kf.get("transition_duration_ms", 500)
-                                    }
-                                    print(f"[Export] Frame {frame_num}: Starting transition {transition_path}")
+                        # Try direct path first
+                        if from_expr != target_expr:
+                            direct_path = f"{from_expr}_to_{target_expr}__{from_pose}"
+                            direct_dir = TIMELINES_DIR / direct_path
+                            
+                            if direct_dir.exists() and (direct_dir / "manifest.json").exists():
+                                # Direct transition exists
+                                with open(direct_dir / "manifest.json", "r") as f:
+                                    manifest_data = json.load(f)
+                                    timeline_data = manifest_data.get("frames", [])
+                                    segments.append({"pathId": direct_path, "timeline": timeline_data})
+                                    print(f"[Export] Frame {frame_num} ({current_time_ms:.0f}ms): Direct transition {direct_path}")
+                            else:
+                                # No direct path, route through neutral
+                                # Step 1: current_expr -> neutral (may need to reverse neutral_to_current_expr)
+                                step1_path = f"{from_expr}_to_neutral__{from_pose}"
+                                step1_dir = TIMELINES_DIR / step1_path
+                                
+                                if step1_dir.exists() and (step1_dir / "manifest.json").exists():
+                                    with open(step1_dir / "manifest.json", "r") as f:
+                                        manifest_data = json.load(f)
+                                        timeline_data = manifest_data.get("frames", [])
+                                        segments.append({"pathId": step1_path, "timeline": timeline_data, "reverse": False})
+                                else:
+                                    # Try reversed transition: neutral_to_from_expr played backwards
+                                    reverse_path = f"neutral_to_{from_expr}__{from_pose}"
+                                    reverse_dir = TIMELINES_DIR / reverse_path
+                                    if reverse_dir.exists() and (reverse_dir / "manifest.json").exists():
+                                        with open(reverse_dir / "manifest.json", "r") as f:
+                                            manifest_data = json.load(f)
+                                            timeline_data = manifest_data.get("frames", [])
+                                            # Reverse the timeline for playback
+                                            timeline_data_reversed = list(reversed(timeline_data))
+                                            segments.append({"pathId": reverse_path, "timeline": timeline_data_reversed, "reverse": True})
+                                
+                                # Step 2: neutral -> target_expr
+                                step2_path = f"neutral_to_{target_expr}__{from_pose}"
+                                step2_dir = TIMELINES_DIR / step2_path
+                                if step2_dir.exists() and (step2_dir / "manifest.json").exists():
+                                    with open(step2_dir / "manifest.json", "r") as f:
+                                        manifest_data = json.load(f)
+                                        timeline_data = manifest_data.get("frames", [])
+                                        segments.append({"pathId": step2_path, "timeline": timeline_data, "reverse": False})
+                                
+                                if len(segments) == 2:
+                                    reverse_note = " (reversed)" if segments[0].get("reverse") else ""
+                                    print(f"[Export] Frame {frame_num} ({current_time_ms:.0f}ms): Routing {from_expr} → neutral{reverse_note} → {target_expr}")
+                        
+                        # TODO: Handle pose changes too (for now, assume pose stays same)
+                        
+                        if segments:
+                            transition_segments = segments
+                            segment_index = 0
+                            frame_index = 0
+                            active_transition = {
+                                "start_ms": current_time_ms,
+                                "duration_ms": kf.get("transition_duration_ms", 500)
+                            }
                         
                         current_state["expr"] = target_expr
                         current_state["pose"] = target_pose
+                        last_triggered_kf_idx = kf_idx
             
             # Render current frame
             frame_img = None
@@ -926,14 +1087,14 @@ async def export_video(request: ExportRequest):
                     
                     # Load frame
                     frame_data = timeline[frame_index]
-                    frame_path = TIMELINES_DIR / seg["pathId"] / frame_data["frame"]
+                    frame_path = TIMELINES_DIR / seg["pathId"] / frame_data["file"]
                     if frame_path.exists():
                         frame_img = Image.open(frame_path)
                 else:
                     # Transition complete - show final frame
                     seg = transition_segments[-1]
                     timeline = seg["timeline"]
-                    frame_path = TIMELINES_DIR / seg["pathId"] / timeline[-1]["frame"]
+                    frame_path = TIMELINES_DIR / seg["pathId"] / timeline[-1]["file"]
                     if frame_path.exists():
                         frame_img = Image.open(frame_path)
                     active_transition = None
@@ -942,24 +1103,48 @@ async def export_video(request: ExportRequest):
                 # No active transition - show idle frame
                 idle_path = f"{current_state['expr']}_to_{current_state['expr']}__{current_state['pose']}"
                 idle_dir = TIMELINES_DIR / idle_path
+                
                 if idle_dir.exists():
-                    json_file = idle_dir / "timeline.json"
+                    json_file = idle_dir / "manifest.json"
                     if json_file.exists():
                         with open(json_file, "r") as f:
-                            idle_timeline = json.load(f)
+                            manifest_data = json.load(f)
+                            idle_timeline = manifest_data.get("frames", [])
                             if idle_timeline:
-                                frame_path = idle_dir / idle_timeline[-1]["frame"]
+                                frame_path = idle_dir / idle_timeline[-1]["file"]
                                 if frame_path.exists():
                                     frame_img = Image.open(frame_path)
+                                    if frame_num == 0:
+                                        print(f"[Export] Using idle frame: {frame_path}")
+                                else:
+                                    print(f"[Export] Idle frame not found: {frame_path}")
+                
+                # If still no frame, try endpoints directory as fallback
+                if not frame_img:
+                    endpoints_dir = FRAMES_DIR / "endpoints"
+                    endpoint_file = endpoints_dir / f"{current_state['expr']}__{current_state['pose']}.png"
+                    if endpoint_file.exists():
+                        frame_img = Image.open(endpoint_file)
+                        if frame_num == 0:
+                            print(f"[Export] Using endpoint: {endpoint_file.name}")
+                    else:
+                        if frame_num == 0:
+                            print(f"[Export] Endpoint not found: {endpoint_file}")
             
             # Save frame (or black frame if nothing found)
             if frame_img:
                 # Convert to RGBA for WebM transparency support
                 if frame_img.mode != "RGBA":
                     frame_img = frame_img.convert("RGBA")
+                
+                if frame_num == 0:
+                    width, height = frame_img.size
+                    print(f"[Export] Video dimensions: {width}x{height}")
             else:
-                # Create transparent frame as fallback
-                frame_img = Image.new("RGBA", (1024, 1024), (0, 0, 0, 0))
+                # Create transparent frame as fallback (use same dimensions as source images)
+                if frame_num == 0:
+                    print(f"[Export] WARNING: No frame found for {current_state['expr']}__{current_state['pose']}, using transparent fallback")
+                frame_img = Image.new("RGBA", (1024, 1536), (0, 0, 0, 0))
             
             # Save frame with zero-padded number
             frame_path = frames_dir / f"frame_{frame_num:06d}.png"
@@ -970,35 +1155,41 @@ async def export_video(request: ExportRequest):
         # Use ffmpeg to create video
         output_file = Path(temp_dir) / f"output.{request.format}"
         
+        # Build ffmpeg command: inputs first, then output options
+        cmd = [
+            "ffmpeg",
+            "-framerate", str(fps),
+            "-i", str(frames_dir / "frame_%06d.png"),
+        ]
+        
+        # Add audio input if present
+        if audio_path:
+            cmd.extend(["-i", str(audio_path)])
+        
+        # Add output encoding options
         if request.format == "webm":
             # WebM with VP9 codec and alpha channel
-            cmd = [
-                "ffmpeg",
-                "-framerate", str(fps),
-                "-i", str(frames_dir / "frame_%06d.png"),
+            cmd.extend([
                 "-c:v", "libvpx-vp9",
                 "-pix_fmt", "yuva420p",  # Alpha channel
                 "-auto-alt-ref", "0",
                 "-b:v", "2M"
-            ]
+            ])
         else:
             # MP4 with H.264 codec
-            cmd = [
-                "ffmpeg",
-                "-framerate", str(fps),
-                "-i", str(frames_dir / "frame_%06d.png"),
+            cmd.extend([
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
                 "-preset", "medium",
                 "-crf", "23"
-            ]
+            ])
         
-        # Add audio if present
+        # Add audio encoding if present
         if audio_path:
-            cmd.extend(["-i", str(audio_path)])
             cmd.extend(["-c:a", "aac" if request.format == "mp4" else "libopus"])
             cmd.extend(["-shortest"])  # End video when shortest stream ends
         
+        # Add output file
         cmd.extend(["-y", str(output_file)])
         
         print(f"[Export] Running ffmpeg: {' '.join(cmd)}")
