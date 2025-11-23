@@ -1,9 +1,10 @@
 import React, { useEffect, useRef, useState, useMemo } from "react";
-import { FaceMesh, Results } from "@mediapipe/face_mesh";
+import { FaceMesh, type Results } from "@mediapipe/face_mesh";
 import { Camera } from "@mediapipe/camera_utils";
 import type { State, ExpressionId, PoseId } from "./transitionGraph.ts";
 import { planRoute } from "./transitionGraph.ts";
-import type { Timeline, Segment } from "./api.ts";
+import type { Timeline } from "./api.ts";
+import type { Segment } from "./transitionGraph.ts";
 import { fetchTimeline } from "./api.ts";
 
 const API_BASE = "http://localhost:8000";
@@ -11,7 +12,7 @@ const API_BASE = "http://localhost:8000";
 type ActiveSegment = {
   seg: Segment;
   timeline: Timeline;
-  direction: "forward" | "backward";
+  direction: "forward" | "reverse";
 };
 
 const FPS = 24;
@@ -26,8 +27,8 @@ function calculateHeadPose(landmarks: any[]): { pitch: number; yaw: number; roll
   const chinBottom = landmarks[152];
   const leftEye = landmarks[33];
   const rightEye = landmarks[263];
-  const leftMouth = landmarks[61];
-  const rightMouth = landmarks[291];
+  // const leftMouth = landmarks[61];
+  // const rightMouth = landmarks[291];
 
   // Calculate yaw (left/right turn) from nose position relative to face width
   const faceWidth = Math.abs(leftEye.x - rightEye.x);
@@ -71,7 +72,7 @@ function calculateMouthOpen(landmarks: any[]): number {
  * Calculate mouth width (for smile detection)
  * Returns normalized width - higher = wider smile
  */
-function calculateMouthWide(landmarks: NormalizedLandmark[]): number {
+function calculateMouthWide(landmarks: any[]): number {
   // Mouth corners
   const leftCorner = landmarks[61];
   const rightCorner = landmarks[291];
@@ -159,7 +160,7 @@ function mapFaceToState(
   const pitchAdjustmentUp = Math.max(0, -relativePitch / 10);  // For looking up
   
   // Hysteresis for expression transitions (dead zone to prevent rapid toggling)
-  const isNeutralExpr = currentState.expr === "neutral";
+  // const isNeutralExpr = currentState.expr === "neutral";
   const isSmiling = currentState.expr === "happy_soft" || currentState.expr === "happy_big";
   const isSpeaking = currentState.expr === "speaking_ah";
 
@@ -222,6 +223,7 @@ export const MediaPipeFaceTrackedPlayer: React.FC = () => {
   const currentStateRef = useRef<State>(currentState);
   const isPlayingRef = useRef<boolean>(isPlaying);
   const targetStateRef = useRef<State>(targetState);
+  const lastTargetRef = useRef<State>(currentState);
   
   // Keep refs in sync
   useEffect(() => {

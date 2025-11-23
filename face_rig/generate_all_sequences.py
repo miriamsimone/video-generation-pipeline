@@ -162,7 +162,7 @@ def generate_midframe(job: TweenJob, seq_dir: str, cfg: dict) -> None:
     pose_desc = POSE_DESCRIPTIONS.get(job.pose_id, job.pose_id.replace("_", " "))
 
     prompt = f"""
-    Watercolor portrait of the same young boy on a flat green background,
+    Watercolor portrait of the same young boy on a transparent background,
     matching the style, identity, hairstyle, clothing, and framing of the
     reference images.
 

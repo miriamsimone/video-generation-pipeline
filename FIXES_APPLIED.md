@@ -143,3 +143,4 @@ The main fix is **simplified prompts**. Video models work better with concise de
 Try running the examples again - they should work much better now! 🎬
 
 
+

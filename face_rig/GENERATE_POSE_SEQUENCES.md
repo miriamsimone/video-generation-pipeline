@@ -222,7 +222,7 @@ The script generates pose transitions while **preserving the neutral facial expr
 
 ```python
 prompt = f"""
-Watercolor portrait of the same young boy on a flat green background,
+Watercolor portrait of the same young boy on a transparent background,
 matching the style, identity, hairstyle, clothing, and framing of the
 reference images.
 

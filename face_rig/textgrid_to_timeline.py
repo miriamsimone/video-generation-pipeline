@@ -160,19 +160,20 @@ def create_timeline_from_words(
     Create a keyframe timeline using first phoneme of each word.
     
     This is less frantic than animating every phoneme - we just find the
-    first vowel phoneme in each word and hold it for the word duration.
+    first vowel phoneme in each word and hold it for the word duration,
+    then return to the emotion that was active before the word.
     
     Args:
         words: List of (start_time, end_time, word_text) tuples
         phonemes: List of (start_time, end_time, phoneme) tuples
         transition_duration_ms: Transition time (default 500ms)
-        return_to_expr: Expression to return to after speech (default "neutral")
+        return_to_expr: Expression to return to after each word (default "neutral")
     
     Returns:
         Timeline dictionary with keyframes
     """
     keyframes = []
-    last_expr = return_to_expr
+    base_expr = return_to_expr  # The emotion to return to after each word
     
     for word_start, word_end, word_text in words:
         # Find all phonemes within this word's time range
@@ -200,30 +201,36 @@ def create_timeline_from_words(
             start, end, first_phoneme = word_phonemes[0]
             target_expr = phoneme_to_expression(first_phoneme)
         
-        # Only add keyframe if expression changed
-        if target_expr and target_expr != last_expr:
+        # Add keyframe for the speaking expression at word start
+        if target_expr:
             word_start_ms = int(word_start * 1000)
+            word_end_ms = int(word_end * 1000)
+            word_duration_ms = word_end_ms - word_start_ms
+            
+            # Quick transition to speaking shape
+            speak_transition = min(150, word_duration_ms // 3)
             
             keyframes.append({
                 "time_ms": word_start_ms,
                 "target_expr": target_expr,
                 "target_pose": "center",
-                "transition_duration_ms": transition_duration_ms,
+                "transition_duration_ms": speak_transition,
                 "phoneme": f"{word_text} ({first_phoneme})",
             })
             
-            last_expr = target_expr
-    
-    # Add final keyframe to return to the base expression (whatever was active before speech)
-    if words and last_expr != return_to_expr:
-        final_time_ms = int(words[-1][1] * 1000)
-        keyframes.append({
-            "time_ms": final_time_ms,
-            "target_expr": return_to_expr,
-            "target_pose": "center",
-            "transition_duration_ms": 300,
-            "phoneme": "",
-        })
+            # Relax back to base expression near end of word
+            # Leave buffer time for relax to complete before next word
+            relax_duration = 100  # ms for mouth to relax
+            relax_buffer = 30     # ms buffer after relax completes
+            relax_time_ms = max(word_start_ms + speak_transition + 50, word_end_ms - relax_duration - relax_buffer)
+            
+            keyframes.append({
+                "time_ms": relax_time_ms,
+                "target_expr": base_expr,
+                "target_pose": "center",
+                "transition_duration_ms": relax_duration,
+                "phoneme": f"(relax)",
+            })
     
     timeline = {
         "id": f"word_animation_{int(words[0][0]*1000) if words else 0}",

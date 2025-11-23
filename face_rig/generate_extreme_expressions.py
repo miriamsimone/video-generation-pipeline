@@ -118,7 +118,7 @@ def generate_extreme_for_expression(
     pose_desc = POSE_DESCRIPTIONS.get(pose_id, pose_id.replace("_", " "))
 
     prompt = f"""
-    Watercolor portrait of the same young boy on a flat green background.
+    Watercolor portrait of the same young boy on a transparent background.
     Use the given reference image for his identity, hairstyle, clothing, and
     framing.
 

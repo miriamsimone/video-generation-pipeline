@@ -6,72 +6,39 @@ import subprocess
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from pydantic import BaseModel
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, FileResponse
+from fastapi.responses import Response, FileResponse, RedirectResponse
 from PIL import Image
-import replicate
 import openai
 
 # --- CONFIG ---
 
-REPLICATE_MODEL = os.environ.get("REPLICATE_MODEL")  # e.g. "minimax/hailuo-2.3:VERSION_HASH"
-REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN")
+# S3 Configuration
+USE_S3 = os.environ.get("USE_S3", "false").lower() == "true"
+S3_BUCKET = os.environ.get("S3_BUCKET", "")
+S3_REGION = os.environ.get("S3_REGION", "us-east-1")
+S3_PREFIX = os.environ.get("S3_PREFIX", "frames/")  # Prefix within bucket for frames
+S3_BASE_URL = os.environ.get("S3_BASE_URL", "")  # Optional: custom CDN URL
 
-# Video generation is optional - server can still serve existing frames without it
-if not REPLICATE_MODEL or not REPLICATE_API_TOKEN:
-    print("⚠️  REPLICATE_MODEL and/or REPLICATE_API_TOKEN not set")
-    print("    Video generation features will be disabled")
-    print("    Server will still serve existing frames and timelines")
-    REPLICATE_MODEL = None
-
-# Prompts per part/action — tweak as needed
-PROMPTS: Dict[str, Dict[str, str]] = {
-    "eyes": {
-        "blink": (
-            "[Static shot] A close-up of the boy's face, same framing as the first frame. "
-            "The head does NOT move or tilt at all. Only the eyelids gently blink a few times. "
-            "No changes to the mouth, nose, or eyebrows. Flat bright green background."
-        ),
-        "look_left": (
-            "[Static shot] A close-up of the boy's face. The head stays perfectly still. "
-            "Only the eyeballs move smoothly to look left and then return to center. "
-            "Eyelids, eyebrows, mouth, and jaw remain almost completely still. Flat bright green background."
-        ),
-        "look_right": (
-            "[Static shot] A close-up of the boy's face. The head stays perfectly still. "
-            "Only the eyeballs move smoothly to look right and then return to center. "
-            "Eyelids, eyebrows, mouth, and jaw remain almost completely still. Flat bright green background."
-        ),
-    },
-    "brows": {
-        "raise": (
-            "[Static shot] A close-up of the boy's face. Camera and head do not move. "
-            "Only the eyebrows lift slightly in surprise and then relax. "
-            "Eyes mostly stay centered and the mouth stays neutral. Flat bright green background."
-        ),
-        "furrow": (
-            "[Static shot] A close-up of the boy's face. Camera and head stay still. "
-            "Only the eyebrows furrow into a thinking expression, then relax toward neutral. "
-            "Eyes and mouth barely move. Flat bright green background."
-        ),
-    },
-    "mouth": {
-        "talk_loop": (
-            "[Static shot] A close-up of the boy's face. No camera motion. "
-            "The head does not move at all. Only the mouth moves in a natural, subtle talking loop "
-            "as if speaking silently. Eyes and eyebrows stay mostly still. Flat bright green background."
-        ),
-        "smile": (
-            "[Static shot] A close-up of the boy's face. Camera and head are completely still. "
-            "Only the mouth slowly transitions from neutral to a gentle smile and then back to neutral. "
-            "Eyes and eyebrows remain almost unchanged. Flat bright green background."
-        ),
-    },
-}
+# Initialize S3 client if enabled
+s3_client = None
+if USE_S3:
+    try:
+        import boto3
+        s3_client = boto3.client('s3', region_name=S3_REGION)
+        print(f"✅ S3 enabled: bucket={S3_BUCKET}, region={S3_REGION}")
+        if S3_BASE_URL:
+            print(f"   Using custom CDN URL: {S3_BASE_URL}")
+    except ImportError:
+        print("⚠️  boto3 not installed, S3 support disabled. Install with: pip install boto3")
+        USE_S3 = False
+    except Exception as e:
+        print(f"⚠️  Failed to initialize S3 client: {e}")
+        USE_S3 = False
 
 # Timeline config
 FRAMES_DIR = Path(__file__).parent / "frames"
@@ -119,14 +86,30 @@ class TTSRequest(BaseModel):
 
 app = FastAPI()
 
-# CORS so your browser app can talk to this API
+# CORS configuration from environment variable
+CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
+# Parse comma-separated origins, or use ["*"] for allow-all
+cors_origins = [origin.strip() for origin in CORS_ORIGINS.split(",")] if CORS_ORIGINS != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten later if you want
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- HEALTH CHECK ---
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for monitoring and load balancers"""
+    return {
+        "status": "ok",
+        "s3_enabled": USE_S3,
+        "s3_bucket": S3_BUCKET if USE_S3 else None
+    }
 
 
 # --- TIMELINE HELPERS ---
@@ -150,6 +133,28 @@ def parse_path_id(path_id: str) -> tuple:
 
 def scan_timeline_frames(path_id: str) -> Timeline:
     """Scan a frames directory and return Timeline manifest"""
+    
+    # If S3 is enabled, try to fetch manifest from S3 first
+    if USE_S3 and s3_client:
+        try:
+            s3_key = f"{S3_PREFIX}sequences/{path_id}/manifest.json"
+            response = s3_client.get_object(Bucket=S3_BUCKET, Key=s3_key)
+            data = json.load(response['Body'])
+            
+            # Validate and return
+            frames = [FrameInfo(**f) for f in data.get("frames", [])]
+            return Timeline(
+                path_id=data["path_id"],
+                expr_start=data["expr_start"],
+                expr_end=data["expr_end"],
+                pose=data["pose"],
+                frames=frames
+            )
+        except Exception as e:
+            print(f"[!] Failed to load manifest from S3: {e}")
+            raise HTTPException(404, f"Timeline not found in S3: {path_id}")
+    
+    # Fall back to local filesystem
     # Check sequences directory first, then fall back to frames root
     frames_path = SEQUENCES_DIR / path_id
     if not frames_path.exists() or not frames_path.is_dir():
@@ -377,147 +382,31 @@ async def regenerate_frame(
 
 @app.get("/frames/{path_id:path}/{filename}")
 async def get_frame_image(path_id: str, filename: str):
-    """Serve a frame PNG"""
-    # Check sequences directory first, then fall back to frames root
-    file_path = SEQUENCES_DIR / path_id / filename
-    if not file_path.exists() or not file_path.is_file():
-        file_path = FRAMES_DIR / path_id / filename
-    
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(404, "Frame not found")
-    
-    return FileResponse(file_path, media_type="image/png")
-
-
-# --- FACE ANIMATOR ENDPOINT ---
-
-def call_replicate_animate(part: str, action: str, crop_png: BytesIO) -> bytes:
-    prompt = PROMPTS.get(part, {}).get(action)
-    if not prompt:
-        raise HTTPException(400, f"Unknown part/action: {part}/{action}")
-
-    crop_png.seek(0)
-
-    try:
-        output = replicate.run(
-            REPLICATE_MODEL,
-            input={
-                "prompt": prompt,
-                "duration": 6,
-                "first_frame_image": crop_png,
-                "prompt_optimizer": False,
-                "resolution": "1080p",
-            },
-        )
-    except Exception as e:
-        # Bubble up any Replicate error in a readable way
-        raise HTTPException(500, f"Replicate run failed: {e}")
-
-    # Debug – see what shape we're getting
-    print("Replicate output type:", type(output))
-    print("Replicate output repr (truncated):", repr(output)[:500])
-
-    # Try to handle the common shapes:
-    from replicate.helpers import FileOutput
-
-    # Case 1: single FileOutput (newer Python client)
-    if isinstance(output, FileOutput):
-        return output.read()
-
-    # Case 2: list[...] (older style or multi-output models)
-    if isinstance(output, list) and output:
-        first = output[0]
-
-        # list[FileOutput]
-        if isinstance(first, FileOutput):
-            return first.read()
-
-        # list[str] – URLs to the video
-        if isinstance(first, str):
-            import requests
-
-            resp = requests.get(first)
-            resp.raise_for_status()
-            return resp.content
-
-    # Case 3: raw bytes (just in case)
-    if isinstance(output, (bytes, bytearray)):
-        return output
-
-    raise HTTPException(
-        500,
-        f"Unexpected Replicate output type: {type(output)}; "
-        f"value (truncated): {repr(output)[:200]}",
-    )
-
-
-@app.post("/animate")
-async def animate(
-    part: str = Form(...),             # "eyes" | "brows" | "mouth" | etc.
-    action: str = Form(...),           # "blink", "look_left", "talk_loop", ...
-    x: int = Form(...),                # crop x (original image coordinates)
-    y: int = Form(...),                # crop y
-    width: int = Form(...),
-    height: int = Form(...),
-    file: UploadFile = File(...),      # full original image
-):
-    if not REPLICATE_MODEL:
-        raise HTTPException(503, "Video generation not available. Set REPLICATE_MODEL and REPLICATE_API_TOKEN environment variables.")
-    
-    print(f"[/animate] Received request: part={part}, action={action}, x={x}, y={y}, width={width}, height={height}")
-    
-    try:
-        raw = await file.read()
-        img = Image.open(BytesIO(raw)).convert("RGBA")
-        print(f"[/animate] Image loaded: {img.width}x{img.height}")
-    except Exception as e:
-        print(f"[/animate] Failed to read image: {e}")
-        raise HTTPException(400, "Could not read image")
-
-    # Clamp box to image bounds
-    x0 = max(0, x)
-    y0 = max(0, y)
-    x1 = min(img.width, x + width)
-    y1 = min(img.height, y + height)
-    if x1 <= x0 or y1 <= y0:
-        raise HTTPException(400, "Invalid crop box")
-
-    # Crop to selected region
-    crop = img.crop((x0, y0, x1, y1))
-    print(f"[/animate] Cropped region: {crop.width}x{crop.height}")
-
-    # ---- NEW: wrap crop into a square canvas to keep aspect ratio valid ----
-    cw, ch = crop.size
-    side = max(cw, ch)
-
-    # bright green background (for later chroma-key if you want)
-    square = Image.new("RGBA", (side, side), (0, 255, 0, 255))
-
-    # center the crop on the square canvas
-    offset_x = (side - cw) // 2
-    offset_y = (side - ch) // 2
-    square.paste(crop, (offset_x, offset_y))
-
-    print(f"[/animate] Wrapped crop in square: {square.width}x{square.height}")
-
-    buf = BytesIO()
-    square.save(buf, format="PNG")
-    print(f"[/animate] Square PNG size: {len(buf.getvalue())} bytes")
-
-    try:
-        print(f"[/animate] Calling Replicate with part={part}, action={action}...")
-        video_bytes = call_replicate_animate(part, action, buf)
-        print(f"[/animate] Got video bytes: {len(video_bytes)} bytes")
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[/animate] Unexpected error: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, f"Replicate error: {e}")
-
-    # Assume mp4 from the video model
-    return Response(content=video_bytes, media_type="video/mp4")
+    """Serve a frame PNG (from S3 or local filesystem)"""
+    if USE_S3:
+        # Construct S3 URL and redirect
+        s3_key = f"{S3_PREFIX}{path_id}/{filename}"
+        
+        if S3_BASE_URL:
+            # Use custom CDN URL
+            s3_url = f"{S3_BASE_URL.rstrip('/')}/{s3_key}"
+        else:
+            # Use standard S3 URL
+            s3_url = f"https://{S3_BUCKET}.s3.{S3_REGION}.amazonaws.com/{s3_key}"
+        
+        # Redirect to S3 URL (client fetches directly from S3)
+        return RedirectResponse(url=s3_url, status_code=302)
+    else:
+        # Serve from local filesystem
+        # Check sequences directory first, then fall back to frames root
+        file_path = SEQUENCES_DIR / path_id / filename
+        if not file_path.exists() or not file_path.is_file():
+            file_path = FRAMES_DIR / path_id / filename
+        
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(404, "Frame not found")
+        
+        return FileResponse(file_path, media_type="image/png")
 
 
 @app.post("/generate-emotions")
@@ -543,7 +432,7 @@ async def generate_emotions(request: EmotionRequest):
         ]
         
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4o",  # 128K context window vs 8K for gpt-4
             messages=[
                 {
                     "role": "system",

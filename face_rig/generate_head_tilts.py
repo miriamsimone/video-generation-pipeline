@@ -144,7 +144,7 @@ def generate_head_tilt(job: TiltJob, cfg: dict) -> None:
     pose_desc = POSE_DESCRIPTIONS.get(job.pose_id, job.pose_id.replace("_", " "))
 
     prompt = f"""
-    Watercolor portrait of the same young boy on a flat green background.
+    Watercolor portrait of the same young boy on a transparent background.
     Use the reference image for his identity, hairstyle, clothing, earrings,
     framing, and facial expression.
 

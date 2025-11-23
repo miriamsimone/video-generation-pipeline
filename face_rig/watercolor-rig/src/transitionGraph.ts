@@ -26,7 +26,7 @@ export type State = {
 
 export type Segment = {
   pathId: string;             // sequence id, e.g. "neutral_to_speaking_ah__center"
-  direction: "forward" | "backward";
+  direction: "forward" | "reverse";
   from: State;
   to: State;
 };
@@ -113,7 +113,7 @@ function getExpressionSegment(
   if (bp) {
     return {
       pathId: `${bp.id}__${pose}`,
-      direction: "backward",
+      direction: "reverse",
       from,
       to,
     };
@@ -157,7 +157,7 @@ function getNeutralPoseSegment(
   if (toPose === "center") {
     return {
       pathId: `neutral_center_to_neutral_${fromPose}`,
-      direction: "backward",
+      direction: "reverse",
       from,
       to,
     };

@@ -136,7 +136,7 @@ def generate_midframe_from_endpoints(
     pose_desc = POSE_DESCRIPTIONS.get(pose_id, pose_id.replace("_", " "))
 
     prompt = f"""
-    Watercolor portrait of the same young boy on a flat green background,
+    Watercolor portrait of the same young boy on a transparent background,
     matching the style and identity of the reference images.
 
     Important: All references to "left" and "right" are from the boy's
@@ -193,7 +193,7 @@ def generate_midframe_openai(
     pose_desc = POSE_DESCRIPTIONS.get(pose_id, pose_id.replace("_", " "))
 
     prompt = f"""
-    Watercolor portrait of the same young boy on a flat green background,
+    Watercolor portrait of the same young boy on a transparent background,
     in a consistent style with the reference image.
 
     Important: All references to "left" and "right" are from the boy's

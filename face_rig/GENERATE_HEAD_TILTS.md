@@ -104,7 +104,7 @@ All jobs run in parallel using `ThreadPoolExecutor`.
 
 ```python
 prompt = f"""
-Watercolor portrait of the same young boy on a flat green background.
+Watercolor portrait of the same young boy on a transparent background.
 Use the reference image for his identity, hairstyle, clothing, earrings,
 framing, and facial expression.
 

@@ -78,10 +78,10 @@ export const TimelineDirector: React.FC = () => {
   const [bufferA, setBufferA] = useState<string>("");
   const [bufferB, setBufferB] = useState<string>("");
   const [activeBuffer, setActiveBuffer] = useState<"A" | "B">("A");
-  const animationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const animationIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   const audioRef = useRef<HTMLAudioElement>(null);
-  const animationFrameRef = useRef<number>();
+  const animationFrameRef = useRef<number>(0);
   const lastUpdateTime = useRef<number>(0);
   const transcriptFileInputRef = useRef<HTMLInputElement>(null);
   const currentStateRef = useRef<State>({ expr: "neutral", pose: "center" });
@@ -607,17 +607,14 @@ export const TimelineDirector: React.FC = () => {
       }
     }
     
-    // Find active expression (phoneme takes precedence, but only while active)
+    // Find active expression (phoneme takes precedence)
+    // The face holds the target expression after transition completes, until next keyframe
     let phonemeExpr: ExpressionId | null = null;
     let phonemeTime = -Infinity;
     for (let i = phonemeTimeline.length - 1; i >= 0; i--) {
       if (phonemeTimeline[i].time_ms <= time) {
-        const transitionEnd = phonemeTimeline[i].time_ms + phonemeTimeline[i].transition_duration_ms;
-        // Only use phoneme if we're still within its transition duration
-        if (time < transitionEnd) {
-          phonemeExpr = phonemeTimeline[i].target_expr;
-          phonemeTime = phonemeTimeline[i].time_ms;
-        }
+        phonemeExpr = phonemeTimeline[i].target_expr;
+        phonemeTime = phonemeTimeline[i].time_ms;
         break;
       }
     }
@@ -636,8 +633,10 @@ export const TimelineDirector: React.FC = () => {
     // Use whichever is more recent (phoneme takes precedence when times are equal)
     if (phonemeExpr !== null && phonemeTime >= exprTime) {
       expr = phonemeExpr;
+      console.log(`📊 Time ${Math.round(time)}ms: PHONEME timeline says ${expr} (from ${phonemeTime}ms)`);
     } else if (exprExpr !== null) {
       expr = exprExpr;
+      console.log(`📊 Time ${Math.round(time)}ms: EXPRESSION timeline says ${expr} (from ${exprTime}ms)`);
     }
     
     return { expr, pose };
@@ -645,19 +644,29 @@ export const TimelineDirector: React.FC = () => {
   
   // Execute a transition to a target state
   const executeTransition = async (target: State) => {
-    // Check if we're already at or transitioning to this state
-    if (currentState.expr === target.expr && currentState.pose === target.pose) {
+    // Don't start new transition while one is in progress
+    if (isAnimating) {
       return;
     }
     
-    console.log(`🎭 ${currentState.expr}__${currentState.pose} → ${target.expr}__${target.pose}`);
+    // Check if we're already at or transitioning to this state (use ref for consistency)
+    const current = currentStateRef.current;
+    if (current.expr === target.expr && current.pose === target.pose) {
+      return;
+    }
     
-    const route = planRoute(currentState, target);
+    console.log(`🎭 ${current.expr}__${current.pose} → ${target.expr}__${target.pose}`);
+    
+    const route = planRoute(current, target);
     if (!route || route.length === 0) {
+      console.warn(`❌ No route found for ${current.expr}__${current.pose} → ${target.expr}__${target.pose}`);
       setCurrentState(target);
+      currentStateRef.current = target;
       setIsAnimating(false);
       return;
     }
+    
+    console.log(`✅ Route found with ${route.length} segments:`, route.map(r => r.pathId).join(' → '));
 
     const segments: Array<{ seg: Segment, timeline: Timeline, direction: "forward" | "reverse" }> = [];
     for (const seg of route) {
@@ -679,7 +688,10 @@ export const TimelineDirector: React.FC = () => {
     setSegmentIndex(0);
     setFrameIndex(0);
     setIsAnimating(true);
-    setCurrentState(target); // Update state immediately for logic purposes
+    
+    // Update the ref immediately to prevent duplicate transitions
+    currentStateRef.current = target;
+    // The state itself will be updated when animation completes
   };
   
   // Animation frame playback (plays through activeSegments with crossfade)
@@ -715,7 +727,14 @@ export const TimelineDirector: React.FC = () => {
             setSegmentIndex((s) => s + 1);
             return 0;
           } else {
-            // Animation complete
+            // Animation complete - update state and ref to final target
+            const finalSeg = activeSegments[activeSegments.length - 1];
+            if (finalSeg) {
+              const finalState = finalSeg.seg.to;
+              setCurrentState(finalState);
+              currentStateRef.current = finalState;
+              console.log(`✅ Animation complete, final state: ${finalState.expr}__${finalState.pose}`);
+            }
             setIsAnimating(false);
             return 0;
           }
@@ -833,6 +852,7 @@ export const TimelineDirector: React.FC = () => {
         const newState = getCurrentStateFromTimeline(newTime);
         const prevState = currentStateRef.current;
         if (newState.expr !== prevState.expr || newState.pose !== prevState.pose) {
+          console.log(`⏰ Time ${Math.round(newTime)}ms: Detected state change, calling executeTransition`);
           executeTransition(newState);
         }
         lastUpdateTime.current = newTime;

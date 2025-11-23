@@ -1,4 +1,5 @@
-export const API_BASE = "http://localhost:8000";
+// Read API base URL from environment variable, default to localhost for development
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 export type FrameInfo = {
   t: number;

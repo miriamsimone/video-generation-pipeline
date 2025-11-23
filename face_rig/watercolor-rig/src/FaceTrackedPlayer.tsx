@@ -41,7 +41,7 @@ type TrackingMessage = {
 type ActiveSegment = {
   seg: Segment;
   timeline: Timeline;
-  direction: "forward" | "backward";
+  direction: "forward" | "reverse";
 };
 
 const FPS = 24;  // Maximum speed for instant response testing
@@ -53,9 +53,9 @@ function mapTrackingToState(
   msg: TrackingMessage, 
   currentState: State,
   baseline: { pitch: number; yaw: number; roll: number } | null,
-  mouthOpen: boolean
+  _mouthOpen: boolean
 ): State {
-  const { face, audio } = msg;
+  const { face } = msg;
   
   if (!face || !face.success) {
     return currentState; // no face detected, keep current
@@ -139,23 +139,17 @@ export const FaceTrackedPlayer: React.FC = () => {
   
   // Calibration baseline - auto-set on first frame (use ref for immediate access)
   const baselineRef = useRef<{ pitch: number; yaw: number; roll: number } | null>(null);
-  const [baselineDisplay, setBaselineDisplay] = useState<{ pitch: number; yaw: number; roll: number } | null>(null);
+  const [, setBaselineDisplay] = useState<{ pitch: number; yaw: number; roll: number } | null>(null);
   
   // Track previous pitch for jaw movement detection
-  const prevPitchRef = useRef<number | null>(null);
-  const pitchChangeHistoryRef = useRef<number[]>([]);
-  
   const wsRef = useRef<WebSocket | null>(null);
   const lastTargetRef = useRef<State>(currentState);
-  const lastTransitionTime = useRef<number>(0);
   const lastValidDataTime = useRef<number>(Date.now());
-  const pendingStateRef = useRef<State | null>(null);
-  const pendingStateTime = useRef<number>(0);
   
   // --- WebSocket connection ---
   useEffect(() => {
     let ws: WebSocket | null = null;
-    let reconnectTimer: NodeJS.Timeout;
+    let reconnectTimer: ReturnType<typeof setTimeout>;
     
     const connect = () => {
       if (ws && ws.readyState !== WebSocket.CLOSED) {
@@ -214,7 +208,7 @@ export const FaceTrackedPlayer: React.FC = () => {
         }
         
         // Map to new state
-        const newTarget = mapTrackingToState(msg, currentState, baselineRef.current);
+        const newTarget = mapTrackingToState(msg, currentState, baselineRef.current, false);
         
         // Update debug info
         let debugStr = `Face: ${msg.face.success ? "✓" : "✗"} | ` +
@@ -383,7 +377,7 @@ export const FaceTrackedPlayer: React.FC = () => {
     } else if (currentState.expr === "happy_big") {
       exprForIdle = "happy_soft";
     } else if (currentState.expr === "blink_closed") {
-      exprForIdle = "neutral";
+      exprForIdle = "speaking_ah"; // fallback to speaking_ah instead of neutral
     }
     
     const idlePath = `neutral_to_${exprForIdle}__${currentState.pose}`;
