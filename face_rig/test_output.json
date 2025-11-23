@@ -1,0 +1,104 @@
+{
+  "id": "word_animation_620",
+  "keyframes": [
+    {
+      "time_ms": 620,
+      "target_expr": "speaking_ee",
+      "target_pose": "center",
+      "transition_duration_ms": 150,
+      "phoneme": "hello (EH0)"
+    },
+    {
+      "time_ms": 1130,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    },
+    {
+      "time_ms": 1180,
+      "target_expr": "speaking_ee",
+      "target_pose": "center",
+      "transition_duration_ms": 63,
+      "phoneme": "i'm (AY1)"
+    },
+    {
+      "time_ms": 1320,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    },
+    {
+      "time_ms": 1370,
+      "target_expr": "speaking_ee",
+      "target_pose": "center",
+      "transition_duration_ms": 136,
+      "phoneme": "testing (EH1)"
+    },
+    {
+      "time_ms": 1730,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    },
+    {
+      "time_ms": 1780,
+      "target_expr": "speaking_ee",
+      "target_pose": "center",
+      "transition_duration_ms": 70,
+      "phoneme": "this (IH1)"
+    },
+    {
+      "time_ms": 1940,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    },
+    {
+      "time_ms": 1990,
+      "target_expr": "oh_round",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "voice (OY1)"
+    },
+    {
+      "time_ms": 2240,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    },
+    {
+      "time_ms": 2290,
+      "target_expr": "speaking_ah",
+      "target_pose": "center",
+      "transition_duration_ms": 150,
+      "phoneme": "alignment (AH0)"
+    },
+    {
+      "time_ms": 2730,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    },
+    {
+      "time_ms": 2780,
+      "target_expr": "speaking_ee",
+      "target_pose": "center",
+      "transition_duration_ms": 150,
+      "phoneme": "system (IH1)"
+    },
+    {
+      "time_ms": 3250,
+      "target_expr": "neutral",
+      "target_pose": "center",
+      "transition_duration_ms": 100,
+      "phoneme": "(relax)"
+    }
+  ],
+  "total_duration_ms": 3300
+}

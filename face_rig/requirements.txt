@@ -1,0 +1,26 @@
+# Core API framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.20
+
+# Image processing
+pillow==11.0.0
+
+# AI integrations
+openai==1.54.0
+
+# AWS S3 support
+boto3==1.35.50
+
+# HTTP requests (for external APIs)
+requests==2.32.3
+
+# Audio processing for TTS
+pydub==0.25.1
+
+# TextGrid parsing for phoneme alignment
+textgrid==1.6.1
+
+# Optional: Montreal Forced Aligner (for local phoneme alignment)
+# Install separately in conda environment as documented in DEPLOYMENT.md
+

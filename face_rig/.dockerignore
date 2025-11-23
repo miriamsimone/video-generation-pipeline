@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+venv_osf/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docs and examples
+*.md
+docs/
+examples/
+
+# Large directories that should be in S3
+frames/sequences/
+frames/endpoints/
+
+# Frontend
+watercolor-rig/
+character-player/
+face-animator-ui/
+
+# Generation scripts (not needed in production)
+generate_*.py
+upload_to_s3.py
+
+# MFA alignment data
+aligned/
+
+# Test data
+test_*
+
+
