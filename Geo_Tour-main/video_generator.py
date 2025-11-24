@@ -3,7 +3,7 @@ Video generation module - Replicate Stability-only implementation
 Generates clips per scene using:
 - Text-to-Image: stability-ai/sdxl
 - Image-to-Video: stability-ai/stable-video-diffusion
-- 3D Visualization: Three.js animated renders
+- Matplotlib diagrams with animations
 """
 import replicate
 import requests
@@ -15,14 +15,6 @@ from config import (
     STORYBOARD_MODEL,
     TEMP_DIR,
 )
-
-# Import Three.js video generator
-try:
-    from threejs_video_generator import ThreeJSVideoGenerator
-    THREEJS_AVAILABLE = True
-except ImportError:
-    THREEJS_AVAILABLE = False
-    safe_print("⚠️  Three.js generator not available (missing dependencies)")
 
 
 def safe_print(*args, **kwargs):
@@ -41,19 +33,6 @@ class VideoGenerator:
         self.sdxl_model = sdxl_model or STORYBOARD_MODEL
         self.max_retries = max_retries
         self.retry_delay = retry_delay
-
-        # Initialize Three.js generator if available
-        self.threejs_generator = None
-        if THREEJS_AVAILABLE:
-            try:
-                self.threejs_generator = ThreeJSVideoGenerator(
-                    width=1920,
-                    height=1080,
-                    fps=24
-                )
-                safe_print("✅ Three.js video generator initialized")
-            except Exception as e:
-                safe_print(f"⚠️  Could not initialize Three.js generator: {e}")
     
     def generate_clips(self, scene_plan, output_dir=None, storyboard_images=None):
         """
