@@ -5,13 +5,14 @@ import json
 import subprocess
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from config import ensure_directories, OUTPUT_DIR, TEMP_DIR, USE_STORYBOARD
 from script_generator import ScriptGenerator
 from scene_planner_ENHANCED import ScenePlanner
 from storyboard_generator import StoryboardGenerator
 from video_generator import VideoGenerator
-from audio_generator import AudioGenerator
+# AudioGenerator removed - using face_rig audio exclusively
 from video_assembler import VideoAssembler
 from face_rig_integrator import FaceRigIntegrator
 
@@ -35,23 +36,22 @@ class VideoPipeline:
                  use_storyboard=None,
                  svd_model=None,
                  sdxl_model=None,
-                 voice_id=None,
                  use_face_rig=True,
                  face_rig_url="http://localhost:8000",
-                 face_rig_voice_id="21m00Tcm4TlvDq8ikWAM"):
+                 face_rig_voice_id="yoZ06aMxZJJ28mfd3POQ"):
         """
         Initialize the video generation pipeline
         
         Args:
             openai_api_key (str): API key for OpenAI (GPT-4)
             video_api_key (str): API key for video generation (Replicate API key)
-            tts_api_key (str): API key for text-to-speech
-            video_provider (str): Video generation provider (replicate, runwayml, pika, etc.)
-            tts_provider (str): TTS provider (elevenlabs, openai, etc.)
+            tts_api_key (str): API key for ElevenLabs TTS (used by face_rig)
+            video_provider (str): Video generation provider (replicate only)
+            tts_provider (str): TTS provider (elevenlabs only)
             use_storyboard (bool): Whether to generate storyboard images first (default: from config)
-            use_face_rig (bool): Whether to generate face_rig character animations
-            face_rig_url (str): URL of the face_rig server
-            face_rig_voice_id (str): ElevenLabs voice ID for face_rig (default: Sam voice)
+            use_face_rig (bool): Whether to use face_rig character animations (always True)
+            face_rig_url (str): URL of the face_rig server (default: http://localhost:8000)
+            face_rig_voice_id (str): ElevenLabs voice ID for character narration (default: Sam)
         """
         ensure_directories()
         
@@ -59,19 +59,24 @@ class VideoPipeline:
         self.scene_planner = ScenePlanner(openai_api_key)
         self.storyboard_gen = StoryboardGenerator(video_api_key)
         self.video_gen = VideoGenerator(video_api_key, svd_model=svd_model, sdxl_model=sdxl_model)
-        self.audio_gen = AudioGenerator(tts_api_key, tts_provider, voice_id=locals().get('voice_id'))
+        # AudioGenerator removed - using face_rig audio exclusively
         self.assembler = VideoAssembler()
         
         self.use_storyboard = use_storyboard if use_storyboard is not None else USE_STORYBOARD
         self.use_face_rig = use_face_rig
         
-        # Initialize face_rig integrator if enabled
+        # Initialize face_rig integrator (always required)
         if self.use_face_rig:
             self.face_rig = FaceRigIntegrator(face_rig_url=face_rig_url, voice_id=face_rig_voice_id)
-            # Check if face_rig server is available
+            # Verify face_rig server is available
             if not self.face_rig.check_server_health():
-                safe_print("⚠️  Face_rig server not available, disabling face_rig integration")
-                self.use_face_rig = False
+                raise RuntimeError(
+                    f"Face_rig server is not available at {face_rig_url}. "
+                    "Please start the face_rig server:\n"
+                    "  cd face_rig\n"
+                    "  conda activate aligner\n"
+                    "  python server.py"
+                )
         
         self.current_project = None
     
@@ -141,76 +146,62 @@ class VideoPipeline:
                 safe_print("\n[3/6] Storyboard Generation (skipped)")
                 safe_print("-" * 70)
             
-            # Step 3.5: Generate face_rig videos (if enabled)
-            face_rig_videos = []
-            face_rig_audio_files = []
-            scene_audio_durations = []
-            if self.use_face_rig:
-                if progress_callback:
-                    progress_callback(3.5, 7, "🎭 Generating face_rig character animations...", "Creating lip-sync videos for each scene")
-                safe_print("\n[3.5/7] Face_rig Character Animation")
-                safe_print("-" * 70)
-                
-                for scene in scene_plan['scenes']:
-                    try:
-                        face_rig_result = self.face_rig.generate_scene_video(
-                            scene['narration'],
-                            scene['scene_number']
-                        )
-                        face_rig_videos.append(face_rig_result['video_path'])
-                        face_rig_audio_files.append(face_rig_result['audio_path'])
-                        scene_audio_durations.append(face_rig_result['audio_duration'])
-                        
-                        # Update scene duration to match actual audio duration
-                        scene['duration'] = int(face_rig_result['audio_duration'])
-                        
-                    except Exception as e:
-                        safe_print(f"  ⚠️  Failed to generate face_rig for scene {scene['scene_number']}: {e}")
-                        # Continue without face_rig for this scene
-                
-                self.current_project["steps"]["face_rig_videos"] = face_rig_videos
-                self.current_project["steps"]["face_rig_audio_files"] = face_rig_audio_files
-                self.current_project["steps"]["scene_audio_durations"] = scene_audio_durations
-                
-                if progress_callback:
-                    progress_callback(3.5, 7, "✅ Face_rig videos generated", f"{len(face_rig_videos)} character animations created")
-            
-            # Step 4: Generate video clips
+            # Step 4: Generate face_rig and video clips in parallel
             if progress_callback:
-                progress_callback(4, 7, "🎥 Generating video clips...", "Creating animated video clips for each scene")
-            safe_print("\n[4/7] Video Clip Generation")
+                progress_callback(4, 6, "🚀 Generating scenes in parallel...", "Creating character animations and video clips simultaneously")
+            safe_print("\n[4/6] Parallel Scene Generation")
             safe_print("-" * 70)
-            clip_paths = self.video_gen.generate_clips(scene_plan, storyboard_images=storyboard_images)
-            self.current_project["steps"]["clips"] = clip_paths
-            if progress_callback:
-                progress_callback(4, 7, "✅ Video clips generated", f"{len(clip_paths)} video clips created")
+            safe_print("  🚀 Generating face_rig character and video clips in parallel...")
             
-            # Step 5: Generate voiceover (skip if face_rig already generated audio)
-            if self.use_face_rig and face_rig_videos and face_rig_audio_files:
-                # Use face_rig audio instead - combine the audio files
-                safe_print("\n[5/7] Voiceover Generation (using face_rig audio)")
-                safe_print("-" * 70)
-                safe_print("  ⏭️  Skipping generation - using audio from face_rig character animations")
-                safe_print(f"  🎵 Combining {len(face_rig_audio_files)} audio files...")
-                audio_path = self._combine_audio_files(face_rig_audio_files)
-                self.current_project["steps"]["audio"] = audio_path
-                safe_print(f"  ✅ Combined audio: {Path(audio_path).name}")
-                if progress_callback:
-                    progress_callback(5, 7, "✅ Using face_rig audio", f"Combined {len(face_rig_audio_files)} audio files")
-            else:
-                if progress_callback:
-                    progress_callback(5, 7, "🎙️ Generating voiceover...", "Creating audio narration from script")
-                safe_print("\n[5/7] Voiceover Generation")
-                safe_print("-" * 70)
-                audio_path = self.audio_gen.generate(script_data)
-                self.current_project["steps"]["audio"] = audio_path
-                if progress_callback:
-                    progress_callback(5, 7, "✅ Voiceover generated", f"Audio file created: {Path(audio_path).name}")
+            # Generate all scenes in parallel
+            scene_results = self._generate_scenes_parallel(scene_plan, storyboard_images, progress_callback)
+            
+            # Extract results
+            face_rig_videos = [r['face_rig_video'] for r in scene_results]
+            face_rig_audio_files = [r['face_rig_audio'] for r in scene_results]
+            scene_audio_durations = [r['audio_duration'] for r in scene_results]
+            clip_paths = [r['video_clip'] for r in scene_results]
+            
+            # Update scene durations to match actual audio
+            for i, scene in enumerate(scene_plan['scenes']):
+                scene['duration'] = int(scene_audio_durations[i])
+            
+            self.current_project["steps"]["face_rig_videos"] = face_rig_videos
+            self.current_project["steps"]["face_rig_audio_files"] = face_rig_audio_files
+            self.current_project["steps"]["scene_audio_durations"] = scene_audio_durations
+            self.current_project["steps"]["clips"] = clip_paths
+            
+            safe_print(f"\n  ✅ Generated {len(scene_results)} complete scenes in parallel")
+            safe_print(f"     - Face_rig videos: {len(face_rig_videos)}")
+            safe_print(f"     - Video clips: {len(clip_paths)}")
+            safe_print(f"     - Audio files: {len(face_rig_audio_files)}")
+            
+            if progress_callback:
+                progress_callback(4, 6, "✅ Scenes generated", f"{len(scene_results)} complete scenes created in parallel")
+            
+            # Step 5: Combine face_rig audio files
+            if not face_rig_audio_files:
+                raise RuntimeError("No face_rig audio files generated. Ensure face_rig server is running and scenes were generated successfully.")
+            
+            safe_print("\n[5/6] Audio Assembly")
+            safe_print("-" * 70)
+            safe_print(f"  🎵 Combining {len(face_rig_audio_files)} audio files from face_rig...")
+            
+            # Show which audio files we're combining
+            for i, audio_file in enumerate(face_rig_audio_files, 1):
+                safe_print(f"      Scene {i}: {Path(audio_file).name}")
+            
+            audio_path = self._combine_audio_files(face_rig_audio_files)
+            self.current_project["steps"]["audio"] = audio_path
+            safe_print(f"  ✅ Combined audio: {Path(audio_path).name}")
+            
+            if progress_callback:
+                progress_callback(5, 6, "✅ Audio combined", f"Combined {len(face_rig_audio_files)} audio files")
             
             # Step 6: Assemble final video
             if progress_callback:
-                progress_callback(6, 7, "🎬 Assembling final video...", "Combining video clips with audio and face_rig overlay")
-            safe_print("\n[6/7] Final Assembly")
+                progress_callback(6, 6, "🎬 Assembling final video...", "Combining video clips with audio and face_rig overlay")
+            safe_print("\n[6/6] Final Assembly")
             safe_print("-" * 70)
             
             if not output_filename:
@@ -229,7 +220,7 @@ class VideoPipeline:
             )
             self.current_project["steps"]["final_video"] = final_video
             if progress_callback:
-                progress_callback(6, 7, "✅ Video complete!", f"Final video saved: {output_filename}")
+                progress_callback(6, 6, "✅ Video complete!", f"Final video saved: {output_filename}")
             
             # Save project metadata
             self._save_metadata()
@@ -252,6 +243,117 @@ class VideoPipeline:
                 "error": str(e),
                 "project_data": self.current_project
             }
+    
+    def _generate_single_scene(self, scene, scene_number, storyboard_image=None):
+        """
+        Generate both face_rig video and main video clip for a single scene in parallel
+        
+        Args:
+            scene: Scene dict with narration and visual_description
+            scene_number: Scene number
+            storyboard_image: Optional storyboard image path
+            
+        Returns:
+            dict: {
+                'scene_number': int,
+                'face_rig_video': str,
+                'face_rig_audio': str,
+                'audio_duration': float,
+                'video_clip': str
+            }
+        """
+        safe_print(f"\n  🎬 Scene {scene_number}: Starting parallel generation...")
+        
+        # Use ThreadPoolExecutor to run face_rig and video generation in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Submit both tasks
+            face_rig_future = executor.submit(
+                self.face_rig.generate_scene_video,
+                scene['narration'],
+                scene_number
+            )
+            
+            video_clip_future = executor.submit(
+                self.video_gen._generate_clip,
+                scene['visual_description'],
+                scene['duration'],
+                scene_number,
+                TEMP_DIR,
+                storyboard_image
+            )
+            
+            # Wait for both to complete
+            face_rig_result = face_rig_future.result()
+            video_clip_path = video_clip_future.result()
+            
+            safe_print(f"  ✅ Scene {scene_number}: Both face_rig and video complete")
+            
+            return {
+                'scene_number': scene_number,
+                'face_rig_video': face_rig_result['video_path'],
+                'face_rig_audio': face_rig_result['audio_path'],
+                'audio_duration': face_rig_result['audio_duration'],
+                'video_clip': video_clip_path
+            }
+    
+    def _generate_scenes_parallel(self, scene_plan, storyboard_images=None, progress_callback=None):
+        """
+        Generate all scenes with face_rig and video clips in parallel
+        
+        Args:
+            scene_plan: Scene plan with all scenes
+            storyboard_images: Optional list of storyboard image paths
+            progress_callback: Optional progress callback
+            
+        Returns:
+            list: List of scene result dicts
+        """
+        scenes = scene_plan['scenes']
+        results = []
+        
+        # Process scenes with limited parallelism (max 3 scenes at once to avoid overwhelming APIs)
+        max_parallel_scenes = 3
+        
+        with ThreadPoolExecutor(max_workers=max_parallel_scenes) as executor:
+            # Submit all scene generation tasks
+            future_to_scene = {}
+            for i, scene in enumerate(scenes):
+                storyboard_image = storyboard_images[i] if storyboard_images and i < len(storyboard_images) else None
+                future = executor.submit(
+                    self._generate_single_scene,
+                    scene,
+                    scene['scene_number'],
+                    storyboard_image
+                )
+                future_to_scene[future] = scene['scene_number']
+            
+            # Collect results as they complete
+            completed = 0
+            for future in as_completed(future_to_scene):
+                scene_number = future_to_scene[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    completed += 1
+                    
+                    safe_print(f"  📊 Progress: {completed}/{len(scenes)} scenes complete")
+                    
+                    if progress_callback:
+                        progress_pct = 4
+                        progress_callback(
+                            progress_pct, 6,
+                            f"🚀 Generating scenes in parallel ({completed}/{len(scenes)})",
+                            f"Scene {scene_number} complete"
+                        )
+                        
+                except Exception as e:
+                    safe_print(f"  ❌ Scene {scene_number} failed: {e}")
+                    raise
+        
+        # Sort results by scene number to maintain order
+        results.sort(key=lambda x: x['scene_number'])
+        
+        return results
     
     def _save_metadata(self):
         """Save project metadata to JSON file"""

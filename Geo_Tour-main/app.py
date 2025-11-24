@@ -136,7 +136,7 @@ def initialize_pipeline():
             # Face rig is always enabled
             use_face_rig=True,
             face_rig_url=st.session_state.get("face_rig_url", "http://localhost:8000"),
-            face_rig_voice_id=st.session_state.get("face_rig_voice_id", "21m00Tcm4TlvDq8ikWAM")
+            face_rig_voice_id=st.session_state.get("face_rig_voice_id", "yoZ06aMxZJJ28mfd3POQ")  # Default to Sam
         )
         st.session_state.pipeline = pipeline
         return True
@@ -297,11 +297,11 @@ with st.sidebar:
         
         st.markdown("**Narrator Voice**")
         face_rig_voice_options = {
-            "Sam (Male, Conversational)": "21m00Tcm4TlvDq8ikWAM",
+            "Sam (Male, Conversational)": "yoZ06aMxZJJ28mfd3POQ",  # Correct Sam voice ID
+            "Rachel (Female, Calm)": "21m00Tcm4TlvDq8ikWAM",  # Rachel's voice ID
             "Bella (Female, Engaging)": "EXAVITQu4vr4xnSDxMaL",
             "Domi (Female, Confident)": "AZnzlk1XvdvUeBnXmlld",
             "Adam (Male, Deep)": "pNInz6obpgDQGcFmaJgB",
-            "Rachel (Female, Calm)": "21m00Tcm4TlvDq8ikWAM",
             "Antoni (Male, Young)": "ErXwobaYiN019PkySvjV",
         }
         selected_fr_voice = st.selectbox(
@@ -383,8 +383,8 @@ else:
     if st.session_state.generating:
         st.header("⏳ Generation Progress")
         
-        # Progress bar (always 7 steps with face_rig)
-        total_steps = 7
+        # Progress bar (6 steps with parallel generation)
+        total_steps = 6
         progress_percent = (st.session_state.progress_step / total_steps) if st.session_state.progress_step > 0 else 0.01
         st.progress(progress_percent)
         
@@ -404,8 +404,7 @@ else:
                 ("📝", "Script Generation", "Creating narrative structure"),
                 ("🎬", "Scene Planning", "Breaking down into visual scenes"),
                 ("🎨", "Storyboard Generation", "Creating visual storyboards"),
-                ("🎭", "Character Animation", "Creating lip-sync videos with emotions"),
-                ("🎥", "Video Clip Generation", "Creating animated video clips"),
+                ("🚀", "Parallel Scene Generation", "Character animation + video clips (parallel)"),
                 ("🎙️", "Audio Assembly", "Combining character audio"),
                 ("🎬", "Final Assembly", "Combining video with picture-in-picture")
             ]

@@ -191,12 +191,29 @@ result = pipeline.run(
 
 **Cost impact**: None - failed API calls aren't billed
 
+## Additional Fix: Audio Generation Optimization
+
+While implementing the retry mechanism, I also discovered and fixed a **redundant audio generation issue**:
+
+### Problem
+- Face_rig was generating audio for each scene ✓
+- Then Geo_Tour was regenerating the entire script audio ✗
+- **Paying for TTS twice!** 💸
+
+### Solution
+- Pipeline now **skips Geo_Tour audio generation** when face_rig is enabled
+- Uses face_rig audio files directly (combines them with FFmpeg)
+- **50% reduction in TTS costs!** 💰
+
+See [AUDIO_FIX.md](Geo_Tour-main/AUDIO_FIX.md) for details.
+
 ## Status
 
-✅ **Implemented and tested**  
+✅ **Retry mechanism implemented and tested**  
+✅ **Audio generation optimized**  
 ✅ **Zero configuration required**  
 ✅ **Production ready**  
 ✅ **Handles your exact error case**  
 
-Your pipeline is now much more robust! The error you experienced would be automatically handled with a simple retry. 🎉
+Your pipeline is now much more robust AND more efficient! 🎉
 

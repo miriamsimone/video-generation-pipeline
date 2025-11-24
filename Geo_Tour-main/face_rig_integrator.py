@@ -23,13 +23,13 @@ def safe_print(*args, **kwargs):
 
 
 class FaceRigIntegrator:
-    def __init__(self, face_rig_url="http://localhost:8000", voice_id="21m00Tcm4TlvDq8ikWAM", max_retries=3, retry_delay=5):
+    def __init__(self, face_rig_url="http://localhost:8000", voice_id="yoZ06aMxZJJ28mfd3POQ", max_retries=3, retry_delay=5):
         """
         Initialize Face Rig integrator
         
         Args:
             face_rig_url: Base URL for the face_rig server
-            voice_id: ElevenLabs voice ID (default is Rachel, Sam voice should be used)
+            voice_id: ElevenLabs voice ID (default is Sam - male conversational voice)
             max_retries: Maximum number of retry attempts for API calls
             retry_delay: Initial delay between retries (seconds, with exponential backoff)
         """
@@ -182,7 +182,7 @@ class FaceRigIntegrator:
                 "transcript": transcript,
                 "voice_id": self.voice_id
             },
-            timeout=120
+            timeout=300  # 5 minutes - increased for longer narrations
         )
         
         if response.status_code != 200:
@@ -197,7 +197,7 @@ class FaceRigIntegrator:
         # Save to local audio directory
         local_audio_path = self.audio_dir / audio_filename
         
-        audio_response = requests.get(audio_url, timeout=30)
+        audio_response = requests.get(audio_url, timeout=300)  # 5 minutes for audio download
         if audio_response.status_code != 200:
             raise RuntimeError(f"Failed to download audio from face_rig server: {audio_response.status_code}")
         
@@ -222,7 +222,7 @@ class FaceRigIntegrator:
                 endpoint,
                 files=files,
                 data=data,
-                timeout=300  # MFA can take a while
+                timeout=1200  # 20 minutes - MFA can take a very long time for longer audio
             )
         
         if response.status_code != 200:
@@ -241,7 +241,7 @@ class FaceRigIntegrator:
                 "phoneme_timeline": phoneme_timeline,
                 "total_duration_ms": total_duration_ms
             },
-            timeout=60
+            timeout=300  # 5 minutes - AI emotion generation
         )
         
         if response.status_code != 200:
@@ -326,7 +326,7 @@ class FaceRigIntegrator:
                 "format": "mp4",
                 "fps": 24
             },
-            timeout=600  # Video export can take a while
+            timeout=1200  # 20 minutes - video export can take a long time rendering frames
         )
         
         if response.status_code != 200:
