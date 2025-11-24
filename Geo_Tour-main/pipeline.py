@@ -279,7 +279,8 @@ class VideoPipeline:
                 scene['duration'],
                 scene_number,
                 TEMP_DIR,
-                storyboard_image
+                storyboard_image,
+                scene.get('scene_type', 'video')
             )
             
             # Wait for both to complete
