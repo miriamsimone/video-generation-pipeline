@@ -635,7 +635,7 @@ async def generate_alignment(
         # Parse TextGrid and generate timeline using existing script
         timeline_script = Path(__file__).parent / "textgrid_to_timeline.py"
         timeline_result = subprocess.run(
-            [sys.executable, str(timeline_script), str(textgrid_path), "--mode", "words"],
+            [sys.executable, str(timeline_script), str(textgrid_path), "--mode", "phonemes", "--cooldown", "350"],
             capture_output=True,
             text=True,
             timeout=10
