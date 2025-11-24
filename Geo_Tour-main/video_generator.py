@@ -180,7 +180,7 @@ class VideoGenerator:
         else:
             return self._generate_replicate_video(description, duration, scene_number, output_dir, storyboard_image)
 
-    def _generate_matplotlib_diagram(self, description, duration, scene_number, output_dir):
+    def _generate_matplotlib_diagram(self, description, duration, scene_number, output_dir, max_retries=3):
         """Generate a labeled matplotlib diagram with simple animation using gemini-3-pro-preview"""
         import os
         import google.generativeai as genai
@@ -193,7 +193,35 @@ class VideoGenerator:
         genai.configure(api_key=gemini_key)
         model = genai.GenerativeModel("gemini-3-pro-preview")
 
-        safe_print(f"    📊 Generating matplotlib code with gemini-3-pro-preview...")
+        last_error = None
+
+        for attempt in range(max_retries):
+            try:
+                if attempt == 0:
+                    safe_print(f"    📊 Generating matplotlib code with gemini-3-pro-preview...")
+                    error_context = ""
+                else:
+                    safe_print(f"    🔄 Retry {attempt}/{max_retries-1}: Regenerating code after error...")
+                    error_context = f"\n\nIMPORTANT: The previous code failed with this error:\n{last_error}\n\nPlease fix this error and generate valid matplotlib code that will run without errors."
+
+                return self._generate_matplotlib_diagram_attempt(description, duration, scene_number, output_dir, error_context)
+
+            except Exception as e:
+                last_error = str(e)
+                safe_print(f"    ⚠️  Attempt {attempt + 1} failed: {last_error}")
+
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"Failed to generate valid matplotlib code after {max_retries} attempts. Last error: {last_error}")
+
+        raise RuntimeError("Matplotlib diagram generation failed")
+
+    def _generate_matplotlib_diagram_attempt(self, description, duration, scene_number, output_dir, error_context=""):
+        """Single attempt to generate matplotlib diagram"""
+        import os
+        import google.generativeai as genai
+
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+        model = genai.GenerativeModel("gemini-3-pro-preview")
 
         # Create prompt for matplotlib code generation
         prompt = f"""Generate Python matplotlib code to create a labeled diagram with a simple animation based on this description:
@@ -208,13 +236,16 @@ Requirements:
 5. Save the animation as an MP4 file at 1920x1080 resolution, 24 fps
 6. Use 'Agg' backend for non-interactive rendering
 7. The code should be complete and runnable as-is
+8. ONLY use valid matplotlib properties - do NOT use properties that don't exist like 'letter_spacing'
 
 Output ONLY the Python code, no explanations. The code should:
-- Import all necessary libraries
+- Import all necessary libraries (matplotlib, numpy, etc.)
 - Set figure size to (19.2, 10.8) for 1920x1080
-- Use plt.switch_backend('Agg') at the start
+- Use matplotlib.use('Agg') at the start
 - Save the animation using writer = FFMpegWriter(fps=24, bitrate=5000)
 - Include the save path as a parameter that can be passed in
+- Use ONLY valid matplotlib text properties: fontsize, fontweight, color, alpha, ha, va, fontfamily, fontstyle
+- DO NOT use invalid properties like letter_spacing, text_spacing, or any other non-existent properties{error_context}
 
 Example structure:
 ```python
@@ -265,30 +296,47 @@ Generate the complete, runnable code now:"""
             code = code.strip()
 
             safe_print(f"    ✅ Generated matplotlib code ({len(code)} chars)")
+
+            # Save generated code for debugging
+            code_path = Path(output_dir) / f"scene_{scene_number}_matplotlib.py"
+            with open(code_path, 'w') as f:
+                f.write(code)
+            safe_print(f"    💾 Saved code to: {code_path.name}")
+
             safe_print(f"    🎬 Executing matplotlib code to create animation...")
 
             # Create output path
             video_path = Path(output_dir) / f"scene_{scene_number}.mp4"
 
-            # Execute the code
+            # Execute the code with better error handling
             exec_globals = {}
-            exec(code, exec_globals)
+            try:
+                exec(code, exec_globals)
+            except Exception as e:
+                raise RuntimeError(f"Code execution failed: {e}")
 
             # Call the function
-            if 'create_diagram_animation' in exec_globals:
-                exec_globals['create_diagram_animation'](str(video_path), duration)
-            else:
+            if 'create_diagram_animation' not in exec_globals:
                 raise RuntimeError("Generated code does not contain 'create_diagram_animation' function")
 
+            try:
+                exec_globals['create_diagram_animation'](str(video_path), duration)
+            except Exception as e:
+                raise RuntimeError(f"Animation creation failed: {e}")
+
             # Verify the video was created
-            if not video_path.exists() or video_path.stat().st_size < 1000:
-                raise RuntimeError(f"Video file was not created or is too small: {video_path}")
+            if not video_path.exists():
+                raise RuntimeError(f"Video file was not created at: {video_path}")
+
+            if video_path.stat().st_size < 1000:
+                raise RuntimeError(f"Video file is too small ({video_path.stat().st_size} bytes), likely corrupted")
 
             safe_print(f"    ✅ Matplotlib animation saved: {video_path.name}")
             return str(video_path)
 
         except Exception as e:
-            raise RuntimeError(f"Matplotlib diagram generation failed: {e}")
+            # Re-raise to trigger retry
+            raise
 
     def _generate_3d_visualization(self, description, duration, scene_number, output_dir):
         """Generate a 3D visualization using gemini-3-pro-image-preview slideshow"""
